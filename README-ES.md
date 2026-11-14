@@ -2,7 +2,7 @@
 
 🌐 [English](README.md) | Versión en español | 📝 [Changelog](CHANGELOG-ES.md)
 
-Lee el **BPM, la tonalidad y la duración** de tu audio y lo renombra, y dibuja **espectrogramas**. Un solo script de Python con interfaz web local, hecho como sus hermanos [Image Processor](https://github.com/meteorik-gaming/Image-Processor) y Video Processor: mismo aspecto, ajustes con nombre, modo carpeta recursivo, los fallos se saltan y se cuentan, y tus originales nunca se tocan.
+Lee el **BPM, la tonalidad y la duración** de tu audio y lo renombra, y dibuja **espectrogramas**. Un solo script de Python con interfaz web local, hecho como sus hermanos [Image Processor](https://github.com/meteorik-media/Image-Processor) y [Video Processor](https://github.com/meteorik-media/Video-Processor): mismo aspecto, ajustes con nombre, modo carpeta recursivo, los fallos se saltan y se cuentan, y tus originales nunca se tocan.
 
 ```
 mi_sample.wav   →   mi_sample__140bpm__Dm__03m05s.wav     (formato original, copia renombrada)

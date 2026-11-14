@@ -2,7 +2,7 @@
 
 🌐 English | [Versión en español](README-ES.md) | 📝 [Changelog](CHANGELOG.md)
 
-Reads the **BPM, key and duration** of your audio and renames it, and draws **spectrograms**. A single Python script with a local web interface, built like its siblings [Image Processor](https://github.com/meteorik-gaming/Image-Processor) and Video Processor: same look, named settings, recursive folder mode, failures are skipped and counted, and your originals are never touched.
+Reads the **BPM, key and duration** of your audio and renames it, and draws **spectrograms**. A single Python script with a local web interface, built like its siblings [Image Processor](https://github.com/meteorik-media/Image-Processor) and [Video Processor](https://github.com/meteorik-media/Video-Processor): same look, named settings, recursive folder mode, failures are skipped and counted, and your originals are never touched.
 
 ```
 my_sample.wav   →   my_sample__140bpm__Dm__03m05s.wav     (original format, a renamed copy)
