@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audio Processor</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#14131a; --panel:#1c1b24; --line:#2e2c3a; --ink:#e9e7f0; --dim:#8b879c;
+  --accent:#5b6ee8; --accent-dim:#363c72; --ok:#4fbf8b; --bad:#e0637a; --warn:#e0b04f;
+  --mono:'SF Mono','JetBrains Mono',ui-monospace,Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);min-height:100vh;}
+header{padding:18px 24px;border-bottom:1px solid var(--line);display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;}
+header h1{font-size:15px;font-weight:600;margin:0;letter-spacing:.02em;}
+header .ver{font-family:var(--mono);font-size:12px;color:var(--dim);}
+header .sp{flex:1;}
+.badge{font-family:var(--mono);font-size:11px;padding:3px 8px;border-radius:10px;border:1px solid var(--line);cursor:default;}
+.badge.ok{color:var(--ok);border-color:#24503e;} .badge.bad{color:var(--bad);border-color:#5a2a36;}
+.lang{background:var(--panel);border:1px solid var(--line);color:var(--ink);border-radius:6px;font-size:11.5px;padding:4px 9px;cursor:pointer;}
+.lang:hover{border-color:var(--accent);}
+.tools{display:flex;gap:4px;padding:10px 24px 0;border-bottom:1px solid var(--line);}
+.tool{padding:9px 18px;font-size:13px;color:var(--dim);cursor:pointer;border:1px solid transparent;border-bottom:none;border-radius:8px 8px 0 0;margin-bottom:-1px;user-select:none;}
+.tool:hover{color:var(--ink);}
+.tool.active{color:var(--ink);background:var(--bg);border-color:var(--line);border-bottom:1px solid var(--bg);}
+.layout{display:grid;grid-template-columns:380px 1fr;min-height:calc(100vh - 107px);}
+@media (max-width:860px){.layout{grid-template-columns:1fr;}}
+.panel{padding:20px;border-right:1px solid var(--line);overflow-y:auto;max-height:calc(100vh - 107px);}
+@media (max-width:860px){.panel{max-height:none;border-right:none;}}
+.section{margin-bottom:20px;border-bottom:1px solid var(--line);padding-bottom:18px;}
+.section h2{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin:0 0 10px;font-weight:600;cursor:pointer;user-select:none;display:flex;align-items:center;}
+.section h2::before{content:'▾';font-size:9px;margin-right:6px;transition:transform .15s;}
+.section.collapsed h2::before{transform:rotate(-90deg);}
+.section.collapsed>*:not(h2){display:none;}
+.hint{font-size:11.5px;color:var(--dim);line-height:1.5;margin:6px 0;}
+.field{margin-bottom:11px;}
+.field>label{display:block;font-size:12px;color:var(--dim);margin-bottom:5px;font-family:var(--mono);}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+input[type=text],input[type=number],select{width:100%;background:var(--panel);border:1px solid var(--line);color:var(--ink);font-family:var(--mono);font-size:12px;padding:7px;border-radius:6px;}
+input:focus,select:focus{outline:none;border-color:var(--accent);}
+.tri{display:flex;gap:0;border:1px solid var(--line);border-radius:6px;overflow:hidden;}
+.tri button{flex:1;background:var(--panel);border:none;color:var(--dim);font-size:11.5px;padding:6px 4px;cursor:pointer;border-right:1px solid var(--line);}
+.tri button:last-child{border-right:none;} .tri button.on{background:var(--accent-dim);color:var(--ink);}
+.btn{background:var(--panel);border:1px solid var(--line);color:var(--ink);padding:8px 12px;border-radius:6px;font-size:12px;cursor:pointer;}
+.btn:hover:not(:disabled){border-color:var(--accent);} .btn:disabled{opacity:.4;cursor:not-allowed;}
+.run-btn{width:100%;background:var(--accent);color:#fff;border:none;padding:11px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;margin-top:6px;}
+.run-btn:disabled{background:var(--accent-dim);color:var(--dim);cursor:not-allowed;}
+.run-btn.stop{background:#8a3346;}
+.btn-row{display:flex;gap:8px;margin-top:8px;} .btn-row .btn{flex:1;}
+.chips{display:flex;flex-direction:column;gap:5px;margin-bottom:8px;}
+.chip{display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:5px 8px;font-family:var(--mono);font-size:11px;}
+.chip .t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left;}
+.chip button{background:none;border:none;color:var(--dim);cursor:pointer;font-size:14px;}
+.chip button:hover{color:var(--bad);}
+.add-row{display:flex;gap:6px;} .add-row input{flex:1;}
+.toggle-row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim);margin:8px 0;}
+.example{font-family:var(--mono);font-size:11.5px;color:var(--ink);background:#0f0e14;border:1px solid var(--line);border-radius:6px;padding:8px 10px;word-break:break-all;margin-top:6px;}
+.main{padding:24px;display:flex;flex-direction:column;gap:14px;min-width:0;}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);}
+.tab{padding:8px 16px;font-size:12px;color:var(--dim);cursor:pointer;border-bottom:2px solid transparent;}
+.tab.active{color:var(--ink);border-color:var(--accent);}
+.status{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:12px;color:var(--dim);flex-wrap:wrap;}
+.status b{color:var(--ink);}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--dim);} .dot.running{background:var(--accent);animation:pulse 1s infinite;} .dot.done{background:var(--ok);} .dot.failed{background:var(--bad);} .dot.cancelled{background:var(--warn);}
+@keyframes pulse{50%{opacity:.3}}
+.progress{height:6px;background:var(--panel);border-radius:3px;overflow:hidden;border:1px solid var(--line);}
+.progress div{height:100%;background:var(--accent);width:0;transition:width .2s;}
+.cmd{font-family:var(--mono);font-size:11px;color:var(--dim);word-break:break-all;}
+.log{background:#0f0e14;border:1px solid var(--line);border-radius:8px;padding:12px;font-family:var(--mono);font-size:12px;line-height:1.55;height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;}
+.log .e{color:var(--bad);} .log .ok{color:var(--ok);} .log .w{color:var(--warn);} .log .d{color:var(--dim);}
+.empty{color:var(--dim);font-size:13px;padding:30px;text-align:center;border:1px dashed var(--line);border-radius:10px;}
+table{width:100%;border-collapse:collapse;font-size:12px;}
+th{font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);text-align:left;padding:8px;border-bottom:1px solid var(--line);}
+td{padding:8px;border-bottom:1px solid var(--line);font-family:var(--mono);vertical-align:top;}
+td.bad{color:var(--bad);} td.ok{color:var(--ok);} td.low{color:var(--warn);}
+td small{display:block;color:var(--dim);font-size:10.5px;}
+.stats{font-family:var(--mono);font-size:11px;color:var(--dim);display:flex;gap:16px;flex-wrap:wrap;}
+.stats b{color:var(--ink);}
+/* espectrogramas */
+.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:14px;}
+@media (max-width:520px){.gallery{grid-template-columns:1fr;}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;display:flex;flex-direction:column;}
+.card .ttl{padding:9px 12px;font-family:var(--mono);font-size:11.5px;display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--line);}
+.card .ttl span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.card .ttl .btn{padding:4px 8px;font-size:11px;}
+.card .img{background:#000;min-height:120px;display:flex;align-items:center;justify-content:center;color:var(--dim);font-size:12px;}
+.card .img img{width:100%;display:block;cursor:zoom-in;}
+.card .img.err{color:var(--bad);padding:16px;text-align:center;}
+/* selector de carpetas */
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.65);display:none;align-items:center;justify-content:center;padding:20px;z-index:10;}
+.modal.open{display:flex;}
+.dlg{background:var(--bg);border:1px solid var(--line);border-radius:12px;width:min(640px,100%);max-height:86vh;display:flex;flex-direction:column;}
+.dlg header{padding:14px 18px;} .dlg .body{padding:0 18px;overflow:auto;flex:1;min-height:200px;}
+.dlg footer{padding:14px 18px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center;}
+.dlg footer .sp{flex:1;}
+.roots{display:flex;gap:6px;flex-wrap:wrap;padding:0 18px 10px;}
+.pathbar{font-family:var(--mono);font-size:12px;padding:8px 18px;color:var(--dim);word-break:break-all;}
+.entry{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:13px;}
+.entry:hover{background:var(--panel);} .entry .sz{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--dim);}
+.entry input{accent-color:var(--accent);}
+.toast{position:fixed;bottom:20px;right:20px;background:var(--panel);border:1px solid var(--bad);color:var(--ink);padding:10px 14px;border-radius:8px;font-size:12.5px;display:none;max-width:420px;z-index:20;}
+.toast.good{border-color:var(--ok);}
+.lightbox{position:fixed;inset:0;background:rgba(0,0,0,.92);display:none;z-index:30;overflow:auto;cursor:zoom-out;}
+.lightbox.open{display:block;} .lightbox img{display:block;margin:auto;max-width:none;}
+.lightbox.fit img{max-width:100%;max-height:100vh;object-fit:contain;}
+</style>
+</head>
+<body>
+<header>
+  <h1>AUDIO PROCESSOR</h1><span class="ver">v__VERSION__</span>
+  <span class="sp"></span>
+  <span class="badge" id="docBadge">…</span>
+  <button class="lang" id="langBtn">EN</button>
+</header>
+<nav class="tools">
+  <div class="tool active" data-tool="rename" data-i="toolRename">Renombrar y analizar</div>
+  <div class="tool" data-tool="spec" data-i="toolSpec">Espectrograma</div>
+</nav>
+
+<div class="layout">
+<aside class="panel">
+  <div class="section" id="sec-src">
+    <h2 data-i="src">Origen</h2>
+    <div class="chips" id="srcChips"></div>
+    <div class="add-row"><input type="text" id="srcText" data-ph="pathPh"><button class="btn" id="srcAdd" data-i="add">Añadir</button></div>
+    <div class="btn-row"><button class="btn" id="srcBrowse" data-i="browse">Explorar…</button></div>
+    <p class="hint" data-i="srcHint">Archivos sueltos o carpetas (se recorren con subcarpetas). Los originales nunca se tocan.</p>
+  </div>
+
+  <div class="section" id="sec-out">
+    <h2 data-i="out">Salida</h2>
+    <div class="add-row"><input type="text" id="outText" data-ph="outPh"><button class="btn" id="outBrowse" data-i="browseShort">Explorar…</button></div>
+    <p class="hint" id="outHint" data-i="outHint">Se crea si no existe.</p>
+  </div>
+
+  <!-- ───── renombrar ───── -->
+  <div data-for="rename">
+    <div class="section" id="sec-fmt">
+      <h2 data-i="fmt">Formato de salida</h2>
+      <div class="field"><div class="tri" id="format"></div></div>
+      <div id="mp3opts">
+        <div class="field"><label data-i="mp3q">Calidad mp3</label><select id="mp3_quality"></select></div>
+        <label class="toggle-row"><input type="checkbox" id="write_tags" checked> <span data-i="tags">Escribir BPM y tonalidad en las etiquetas ID3</span></label>
+      </div>
+      <p class="hint" data-i="fmtHint">«Original» copia el archivo con el nombre nuevo, sin recodificar. «MP3» convierte (y conserva la carátula y las etiquetas).</p>
+    </div>
+
+    <div class="section" id="sec-name">
+      <h2 data-i="name">Nombre</h2>
+      <div class="row2">
+        <div class="field"><label data-i="keyfmt">Tonalidad</label><select id="key_format"></select></div>
+        <div class="field"><label data-i="acc">Alteraciones</label><select id="accidental"></select></div>
+      </div>
+      <div class="field"><label data-i="bpmdec">Decimales de BPM</label><select id="bpm_decimals"><option value="0">0 · 140bpm</option><option value="1">1 · 140.5bpm</option></select></div>
+      <div class="example" id="example"></div>
+    </div>
+
+    <div class="section collapsed" id="sec-ana">
+      <h2 data-i="ana">Análisis</h2>
+      <div class="row2">
+        <div class="field"><label data-i="bpmmin">BPM mínimo</label><input type="number" id="bpm_min" min="20" max="399"></div>
+        <div class="field"><label data-i="bpmmax">BPM máximo</label><input type="number" id="bpm_max" min="21" max="400"></div>
+      </div>
+      <div class="field"><label data-i="win">Ventana analizada (s)</label><input type="number" id="analyze_seconds" min="0" placeholder="120"></div>
+      <p class="hint" data-i="anaHint">Si te sale el doble o la mitad del BPM real (p. ej. 180 en vez de 90), acota el rango: máx. 150 fuerza el 90. Ventana: se analiza el centro de la pista (0 = pista completa, más lento).</p>
+    </div>
+
+    <div class="section collapsed" id="sec-watch">
+      <h2 data-i="watch">Vigilar carpeta</h2>
+      <div class="row2">
+        <div class="field"><label data-i="interval">Revisar cada (s)</label><input type="number" id="interval" min="5" value="300"></div>
+        <div class="field"><label data-i="settle">Esperar (s)</label><input type="number" id="settle" min="0" placeholder="0"></div>
+      </div>
+      <p class="hint" data-i="watchHint">Con «Vigilar» el proceso queda activo y procesa lo nuevo en cada pasada. «Esperar» salta archivos modificados hace menos de N segundos (por si aún se copian).</p>
+      <label class="toggle-row"><input type="checkbox" id="force"> <span data-i="force">Reprocesar aunque ya esté al día</span></label>
+    </div>
+
+    <button class="run-btn" id="runBtn" data-i="run">Procesar</button>
+    <div class="btn-row">
+      <button class="btn" id="dryBtn" data-i="dry">Vista previa</button>
+      <button class="btn" id="watchBtn" data-i="watchBtn">Vigilar</button>
+    </div>
+  </div>
+
+  <!-- ───── espectrograma ───── -->
+  <div data-for="spec" style="display:none">
+    <div class="section" id="sec-sview">
+      <h2 data-i="sview">Imagen</h2>
+      <div class="row2">
+        <div class="field"><label data-i="width">Ancho (px)</label><input type="number" id="s_width" min="200" max="16000" step="10"></div>
+        <div class="field"><label data-i="height">Alto (px)</label><input type="number" id="s_height" min="100" max="8000" step="10"></div>
+      </div>
+      <div class="row2">
+        <div class="field"><label data-i="color">Paleta</label><select id="s_color"></select></div>
+        <div class="field"><label data-i="smode">Canales</label><select id="s_mode"></select></div>
+      </div>
+      <label class="toggle-row"><input type="checkbox" id="s_legend" checked> <span data-i="legend">Ejes y leyenda de dB</span></label>
+    </div>
+    <div class="section" id="sec-sfft">
+      <h2 data-i="sfft">Frecuencia e intensidad</h2>
+      <div class="row2">
+        <div class="field"><label data-i="fscale">Eje de frecuencia</label><select id="s_fscale"></select></div>
+        <div class="field"><label data-i="scale">Escala de intensidad</label><select id="s_scale"></select></div>
+      </div>
+      <div class="row2">
+        <div class="field"><label data-i="fmin">Desde (Hz)</label><input type="number" id="s_fmin" min="0" placeholder="0"></div>
+        <div class="field"><label data-i="fmax">Hasta (Hz)</label><input type="number" id="s_fmax" min="0" placeholder="Nyquist"></div>
+      </div>
+      <div class="row2">
+        <div class="field"><label data-i="drange">Rango dinámico (dB)</label><input type="number" id="s_drange" min="10" max="200"></div>
+        <div class="field"><label data-i="gain">Ganancia</label><input type="number" id="s_gain" min="0" max="128" step="0.5"></div>
+      </div>
+      <div class="field"><label data-i="swin">Ventana FFT</label><select id="s_win"></select></div>
+    </div>
+    <div class="section" id="sec-srange">
+      <h2 data-i="srange">Tramo de tiempo</h2>
+      <div class="row2">
+        <div class="field"><label data-i="from">Desde</label><input type="text" id="s_start" placeholder="0:00"></div>
+        <div class="field"><label data-i="to">Hasta</label><input type="text" id="s_end" placeholder="fin"></div>
+      </div>
+      <p class="hint" data-i="srangeHint">Formatos: 90, 1:30, 2m. Vacío = pista completa. Para ver detalle de un tramo, acótalo.</p>
+    </div>
+    <button class="run-btn" id="specBtn" data-i="gen">Generar espectrogramas</button>
+    <div class="btn-row">
+      <button class="btn" id="specSaveAll" data-i="saveAll" disabled>Guardar todos en la salida</button>
+    </div>
+    <p class="hint" data-i="specSaveHint">Se guardan como PNG en la subcarpeta «spectrograms» de la carpeta de salida.</p>
+  </div>
+</aside>
+
+<section class="main">
+  <!-- renombrar -->
+  <div data-for="rename">
+    <div class="tabs">
+      <div class="tab active" data-tab="log" data-i="tabLog">Progreso</div>
+      <div class="tab" data-tab="res" data-i="tabRes">Resultados</div>
+    </div>
+    <div id="tab-log" style="margin-top:14px">
+      <div class="status"><span class="dot" id="dot"></span><b id="stateTxt">—</b><span id="progLabel"></span></div>
+      <div class="progress" style="margin:10px 0"><div id="bar"></div></div>
+      <div class="cmd" id="cmd"></div>
+      <div class="log" id="log"></div>
+    </div>
+    <div id="tab-res" style="display:none;margin-top:14px">
+      <div class="stats" id="resStats"></div>
+      <div class="btn-row" style="max-width:420px">
+        <button class="btn" id="openOut" data-i="openOut">Abrir carpeta de salida</button>
+        <button class="btn" id="refreshRes" data-i="refresh">Actualizar</button>
+      </div>
+      <div id="resBody" style="margin-top:14px"></div>
+    </div>
+  </div>
+  <!-- espectrograma -->
+  <div data-for="spec" style="display:none">
+    <div class="status"><span class="dot" id="sdot"></span><b id="sstate">—</b><span id="slabel"></span></div>
+    <div class="progress" style="margin:10px 0"><div id="sbar"></div></div>
+    <div class="gallery" id="gallery"></div>
+    <div class="empty" id="galleryEmpty" data-i="galleryEmpty">Elige uno o varios audios y pulsa «Generar espectrogramas».</div>
+  </div>
+</section>
+</div>
+
+<div class="modal" id="modal">
+  <div class="dlg">
+    <header><h1 id="mTitle"></h1></header>
+    <div class="roots" id="mRoots"></div>
+    <div class="pathbar" id="mPath"></div>
+    <div class="body" id="mList"></div>
+    <footer>
+      <button class="btn" id="mUp" data-i="up">↑ Subir</button>
+      <span class="sp"></span>
+      <button class="btn" id="mCancel" data-i="cancel">Cancelar</button>
+      <button class="btn" id="mOk" style="background:var(--accent);border-color:var(--accent)"></button>
+    </footer>
+  </div>
+</div>
+<div class="lightbox" id="lightbox"><img id="lbImg" alt=""></div>
+<div class="toast" id="toast"></div>
+
+<script>
+const TOKEN = "__TOKEN__";
+const T = {
+  es:{toolRename:"Renombrar y analizar",toolSpec:"Espectrograma",
+    src:"Origen",add:"Añadir",browse:"Explorar archivos y carpetas…",browseShort:"Explorar…",pathPh:"Pega una ruta de archivo o carpeta",
+    srcHint:"Archivos sueltos o carpetas (se recorren con subcarpetas). Los originales nunca se tocan.",
+    out:"Salida",outPh:"Carpeta de salida",outHint:"Se crea si no existe. Si ya hay un manifest.json, lo ya procesado se salta.",
+    fmt:"Formato de salida",orig:"Original",mp3q:"Calidad mp3",tags:"Escribir BPM y tonalidad en las etiquetas ID3",
+    fmtHint:"«Original» copia el archivo con el nombre nuevo, sin recodificar. «MP3» convierte (y conserva la carátula y las etiquetas).",
+    name:"Nombre",keyfmt:"Tonalidad",acc:"Alteraciones",bpmdec:"Decimales de BPM",sharp:"Sostenidos (F#)",flat:"Bemoles (Gb)",
+    kShort:"Corta (Dm)",kLong:"Larga (Dmin)",kCamelot:"Camelot (7A)",
+    ana:"Análisis",bpmmin:"BPM mínimo",bpmmax:"BPM máximo",win:"Ventana analizada (s)",
+    anaHint:"Si te sale el doble o la mitad del BPM real (p. ej. 180 en vez de 90), acota el rango: máx. 150 fuerza el 90. Ventana: se analiza el centro de la pista (0 = pista completa, más lento).",
+    watch:"Vigilar carpeta",interval:"Revisar cada (s)",settle:"Esperar (s)",
+    watchHint:"Con «Vigilar» el proceso queda activo y procesa lo nuevo en cada pasada. «Esperar» salta archivos modificados hace menos de N segundos (por si aún se copian).",
+    force:"Reprocesar aunque ya esté al día",
+    run:"Procesar",dry:"Vista previa",watchBtn:"Vigilar",stop:"Detener",tabLog:"Progreso",tabRes:"Resultados",
+    openOut:"Abrir carpeta de salida",refresh:"Actualizar",up:"↑ Subir",cancel:"Cancelar",
+    idle:"Listo para empezar",running:"Procesando…",done:"Terminado",failed:"Terminó con errores",cancelled:"Detenido",
+    pickSrc:"Elige archivos o carpetas",pickOut:"Elige la carpeta de salida",selectFolder:"Elegir esta carpeta",addSelected:"Añadir selección",
+    addFolder:"Añadir esta carpeta",noAudio:"Sin audios ni subcarpetas aquí",doctorOk:"listo",doctorBad:"Falta algo",
+    noRes:"Todavía no hay resultados en esta carpeta de salida.",colId:"Archivo",colState:"Estado",colBpm:"BPM",colKey:"Tonalidad",colDur:"Duración",colOut:"Salida",
+    files:"archivos",ok:"ok",failedN:"con error",lowConf:"confianza baja: revisa",
+    needSrcOut:"Falta el origen o la salida",needSrc:"Falta el origen",
+    sview:"Imagen",width:"Ancho (px)",height:"Alto (px)",color:"Paleta",smode:"Canales",combined:"Juntos",separate:"Separados",legend:"Ejes y leyenda de dB",
+    sfft:"Frecuencia e intensidad",fscale:"Eje de frecuencia",scale:"Escala de intensidad",lin:"Lineal",log:"Logarítmica",
+    fmin:"Desde (Hz)",fmax:"Hasta (Hz)",drange:"Rango dinámico (dB)",gain:"Ganancia",swin:"Ventana FFT",
+    srange:"Tramo de tiempo",from:"Desde",to:"Hasta",srangeHint:"Formatos: 90, 1:30, 2m. Vacío = pista completa. Para ver detalle de un tramo, acótalo.",
+    gen:"Generar espectrogramas",saveAll:"Guardar todos en la salida",specSaveHint:"Se guardan como PNG en la subcarpeta «spectrograms» de la carpeta de salida.",
+    galleryEmpty:"Elige uno o varios audios y pulsa «Generar espectrogramas».",save:"Guardar",saved:"Guardado en",savedN:"guardados",
+    generating:"Generando…",specDone:"Terminado",specErr:"Error",needOut:"Elige la carpeta de salida para guardar"},
+  en:{toolRename:"Rename & analyze",toolSpec:"Spectrogram",
+    src:"Source",add:"Add",browse:"Browse files and folders…",browseShort:"Browse…",pathPh:"Paste a file or folder path",
+    srcHint:"Single files or folders (subfolders included). Originals are never touched.",
+    out:"Output",outPh:"Output folder",outHint:"Created if missing. If a manifest.json is already there, what's processed gets skipped.",
+    fmt:"Output format",orig:"Original",mp3q:"MP3 quality",tags:"Write BPM and key into the ID3 tags",
+    fmtHint:"“Original” copies the file under its new name, no re-encoding. “MP3” converts (keeping cover art and tags).",
+    name:"Name",keyfmt:"Key",acc:"Accidentals",bpmdec:"BPM decimals",sharp:"Sharps (F#)",flat:"Flats (Gb)",
+    kShort:"Short (Dm)",kLong:"Long (Dmin)",kCamelot:"Camelot (7A)",
+    ana:"Analysis",bpmmin:"Min BPM",bpmmax:"Max BPM",win:"Analyzed window (s)",
+    anaHint:"If you get double or half the real BPM (e.g. 180 instead of 90), narrow the range: max 150 forces 90. Window: the middle of the track is analyzed (0 = whole track, slower).",
+    watch:"Watch folder",interval:"Check every (s)",settle:"Settle (s)",
+    watchHint:"“Watch” keeps the process alive and handles new files on every pass. “Settle” skips files modified less than N seconds ago (in case they're still being copied).",
+    force:"Reprocess even if up to date",
+    run:"Process",dry:"Preview",watchBtn:"Watch",stop:"Stop",tabLog:"Progress",tabRes:"Results",
+    openOut:"Open output folder",refresh:"Refresh",up:"↑ Up",cancel:"Cancel",
+    idle:"Ready to start",running:"Processing…",done:"Finished",failed:"Finished with errors",cancelled:"Stopped",
+    pickSrc:"Pick files or folders",pickOut:"Pick the output folder",selectFolder:"Choose this folder",addSelected:"Add selection",
+    addFolder:"Add this folder",noAudio:"No audio files or subfolders here",doctorOk:"ready",doctorBad:"Something is missing",
+    noRes:"No results in this output folder yet.",colId:"File",colState:"Status",colBpm:"BPM",colKey:"Key",colDur:"Duration",colOut:"Output",
+    files:"files",ok:"ok",failedN:"failed",lowConf:"low confidence: double-check",
+    needSrcOut:"Source or output is missing",needSrc:"Source is missing",
+    sview:"Image",width:"Width (px)",height:"Height (px)",color:"Palette",smode:"Channels",combined:"Combined",separate:"Separate",legend:"Axes and dB legend",
+    sfft:"Frequency & intensity",fscale:"Frequency axis",scale:"Intensity scale",lin:"Linear",log:"Logarithmic",
+    fmin:"From (Hz)",fmax:"To (Hz)",drange:"Dynamic range (dB)",gain:"Gain",swin:"FFT window",
+    srange:"Time range",from:"From",to:"To",srangeHint:"Formats: 90, 1:30, 2m. Empty = whole track. To see detail, narrow the range.",
+    gen:"Generate spectrograms",saveAll:"Save all to output",specSaveHint:"Saved as PNG in the “spectrograms” subfolder of the output folder.",
+    galleryEmpty:"Pick one or more audio files and press “Generate spectrograms”.",save:"Save",saved:"Saved to",savedN:"saved",
+    generating:"Generating…",specDone:"Finished",specErr:"Error",needOut:"Pick the output folder to save"}
+};
+const $ = id => document.getElementById(id);
+const store = { get(k){ try{return localStorage.getItem(k);}catch(e){return null;} }, set(k,v){ try{localStorage.setItem(k,v);}catch(e){} } };
+let lang = store.get("ap.lang") || ((navigator.language||"es").slice(0,2) === "en" ? "en" : "es");
+const t = k => (T[lang][k] ?? k);
+let S = { doctor:null, roots:[], rename_defaults:{}, spec_defaults:{}, spec_choices:{}, mp3_qualities:[] };
+let sources = [], format = "original", tool = "rename", since = 0, lastState = "idle", pollTimer = null;
+const FIELDS = ["mp3_quality","key_format","accidental","bpm_decimals","bpm_min","bpm_max","analyze_seconds","interval","settle",
+  "s_width","s_height","s_color","s_mode","s_fscale","s_scale","s_fmin","s_fmax","s_drange","s_gain","s_win","s_start","s_end"];
+
+async function api(path, body, blob){
+  const opt = { headers:{ "X-AP-Token":TOKEN } };
+  if (body !== undefined){ opt.method="POST"; opt.headers["Content-Type"]="application/json"; opt.body=JSON.stringify(body); }
+  const r = await fetch(path, opt);
+  if (blob && r.ok) return r.blob();
+  const j = await r.json().catch(()=>({error:"respuesta no válida"}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+function toast(msg, good){ const el=$("toast"); el.textContent=msg; el.classList.toggle("good", !!good); el.style.display="block"; clearTimeout(toast.t); toast.t=setTimeout(()=>el.style.display="none",5000); }
+function fmtSize(n){ n=+n||0; const u=["B","KB","MB","GB","TB"]; let i=0; while(n>=1024&&i<4){n/=1024;i++;} return (i?n.toFixed(1):n.toFixed(0))+" "+u[i]; }
+function fmtMs(s){ s=Math.max(0,Math.round(+s||0)); return String(Math.floor(s/60)).padStart(2,"0")+"m"+String(s%60).padStart(2,"0")+"s"; }
+function fillSelect(id, values, labeler){
+  const sel = $(id), keep = sel.value; sel.innerHTML = "";
+  values.forEach(v => { const o = document.createElement("option"); o.value = v; o.textContent = labeler ? labeler(v) : v; sel.appendChild(o); });
+  if (keep && values.includes(keep)) sel.value = keep;
+}
+
+function applyLang(){
+  document.documentElement.lang = lang;
+  document.querySelectorAll("[data-i]").forEach(el => { el.textContent = t(el.dataset.i); });
+  document.querySelectorAll("[data-ph]").forEach(el => { el.placeholder = t(el.dataset.ph); });
+  $("langBtn").textContent = lang === "es" ? "EN" : "ES";
+  fillSelect("key_format", ["short","long","camelot"], v => t({short:"kShort",long:"kLong",camelot:"kCamelot"}[v]));
+  fillSelect("accidental", ["sharp","flat"], v => t(v));
+  fillSelect("s_fscale", S.spec_choices.fscale||[], v => t(v));
+  fillSelect("s_mode", S.spec_choices.mode||[], v => t(v));
+  buildFormat(); renderDoctor(); renderState(lastState); renderSources(); updateExample(); updateRunBtn(); setSpecState(specState);
+  if ($("tab-res").style.display !== "none") loadResults();
+}
+function buildFormat(){
+  const box = $("format"); box.innerHTML = "";
+  [["original",t("orig")],["mp3","MP3"]].forEach(([val,label]) => {
+    const b = document.createElement("button"); b.textContent = label; b.className = format===val ? "on" : "";
+    b.onclick = () => { format = val; buildFormat(); updateExample(); persist(); }; box.appendChild(b);
+  });
+  $("mp3opts").style.display = format === "mp3" ? "" : "none";
+}
+function renderDoctor(){
+  const d = S.doctor, el = $("docBadge"); if (!d) return;
+  el.className = "badge " + (d.ok ? "ok" : "bad");
+  el.textContent = (d.ok ? "✓ " : "✗ ") + (d.ok ? "ffmpeg · numpy " + t("doctorOk") : t("doctorBad"));
+  el.title = [["ffmpeg","ffmpeg"],["ffprobe","ffprobe"],["mp3","libmp3lame"],["spectrogram","showspectrumpic"],["numpy","numpy"]]
+    .map(([k,n]) => (d[k]?"✓ ":"✗ ")+n).join("\n");
+}
+function updateExample(){
+  const kf = $("key_format").value || "short", acc = $("accidental").value || "sharp", dec = $("bpm_decimals").value === "1";
+  const key = kf === "camelot" ? "7A" : kf === "long" ? "Dmin" : "Dm";
+  $("example").textContent = `nombre_original__${dec ? "140.5" : "140"}bpm__${key}__03m05s.${format === "mp3" ? "mp3" : "wav"}` + (acc === "flat" && kf !== "camelot" ? "  (Bb, Gb…)" : "");
+}
+function renderSources(){
+  const box = $("srcChips"); box.innerHTML = "";
+  sources.forEach((s,i) => {
+    const c = document.createElement("div"); c.className="chip";
+    const tt = document.createElement("span"); tt.className="t"; tt.textContent = "\u200E"+s; tt.title = s;
+    const x = document.createElement("button"); x.textContent="✕"; x.onclick=()=>{ sources.splice(i,1); renderSources(); persist(); };
+    c.append(tt,x); box.appendChild(c);
+  });
+  updateRunBtn();
+}
+function updateRunBtn(){
+  const busy = lastState === "running", ready = sources.length && $("outText").value.trim();
+  $("runBtn").disabled = !busy && !ready; $("dryBtn").disabled = busy || !ready; $("watchBtn").disabled = busy || !ready;
+  $("runBtn").textContent = busy ? t("stop") : t("run"); $("runBtn").classList.toggle("stop", busy);
+  $("specBtn").disabled = !sources.length || specBusy;
+}
+function persist(){
+  const f = FIELDS.reduce((a,k)=>(a[k]=$(k).value,a),{});
+  store.set("ap.form", JSON.stringify({ sources, out:$("outText").value, format, tool, f,
+    write_tags:$("write_tags").checked, s_legend:$("s_legend").checked }));
+}
+function restore(){
+  try{
+    const f = JSON.parse(store.get("ap.form")||"null"); if(!f) return;
+    sources = f.sources||[]; $("outText").value = f.out||""; format = f.format||"original";
+    Object.entries(f.f||{}).forEach(([k,v])=>{ if ($(k) && v !== "") $(k).value = v; });
+    if (typeof f.write_tags === "boolean") $("write_tags").checked = f.write_tags;
+    if (typeof f.s_legend === "boolean") $("s_legend").checked = f.s_legend;
+    if (f.tool) tool = f.tool;
+  }catch(e){}
+}
+function defaults(){
+  const d = S.rename_defaults, s = S.spec_defaults;
+  fillSelect("mp3_quality", S.mp3_qualities);
+  fillSelect("key_format", ["short","long","camelot"], v => t({short:"kShort",long:"kLong",camelot:"kCamelot"}[v]));
+  fillSelect("accidental", ["sharp","flat"], v => t(v));
+  $("mp3_quality").value = d.mp3_quality; $("key_format").value = d.key_format; $("accidental").value = d.accidental;
+  $("bpm_decimals").value = String(d.bpm_decimals); $("bpm_min").value = d.bpm_min; $("bpm_max").value = d.bpm_max;
+  $("analyze_seconds").value = d.analyze_seconds; $("write_tags").checked = d.write_tags;
+  fillSelect("s_color", S.spec_choices.color); fillSelect("s_scale", S.spec_choices.scale, v => v); fillSelect("s_win", S.spec_choices.win);
+  fillSelect("s_fscale", S.spec_choices.fscale, v => t(v)); fillSelect("s_mode", S.spec_choices.mode, v => t(v));
+  $("s_width").value = s.width; $("s_height").value = s.height; $("s_color").value = s.color; $("s_mode").value = s.mode;
+  $("s_fscale").value = s.fscale; $("s_scale").value = s.scale; $("s_win").value = s.win; $("s_drange").value = s.drange; $("s_gain").value = s.gain;
+  $("s_legend").checked = s.legend;
+}
+
+function setTool(name){
+  tool = name;
+  document.querySelectorAll(".tool").forEach(x => x.classList.toggle("active", x.dataset.tool === name));
+  document.querySelectorAll("[data-for]").forEach(el => { el.style.display = el.dataset.for === name ? "" : "none"; });
+  $("outHint").textContent = name === "spec" ? t("specSaveHint") : t("outHint");
+  persist();
+}
+
+/* ── selector de carpetas del servidor ── */
+let M = { mode:null, path:"", parent:null, picked:new Set() };
+async function openBrowser(mode, start){
+  M = { mode, path:start||"", parent:null, picked:new Set() };
+  $("mTitle").textContent = mode==="out" ? t("pickOut") : t("pickSrc");
+  $("modal").classList.add("open");
+  $("mRoots").innerHTML = "";
+  S.roots.forEach(r => { const b=document.createElement("button"); b.className="btn"; b.textContent=r; b.onclick=()=>loadDir(r); $("mRoots").appendChild(b); });
+  loadDir(M.path || (mode==="out" ? $("outText").value : "") || "");
+}
+function joinPath(dir, name){ return dir.replace(/[\\/]$/,"") + (dir.includes("\\")?"\\":"/") + name; }
+async function loadDir(path){
+  try{
+    const d = await api("/api/browse?path="+encodeURIComponent(path));
+    M.path = d.path; M.parent = d.parent; M.picked.clear();
+    $("mPath").textContent = d.path; $("mUp").disabled = !d.parent;
+    const list = $("mList"); list.innerHTML = "";
+    if (!d.dirs.length && !d.files.length){ const e=document.createElement("div"); e.className="hint"; e.style.padding="14px 0"; e.textContent=t("noAudio"); list.appendChild(e); }
+    d.dirs.forEach(n => {
+      const row = document.createElement("div"); row.className="entry"; row.textContent = "📁 "+n;
+      row.onclick = () => loadDir(joinPath(d.path, n)); list.appendChild(row);
+    });
+    if (M.mode==="src") d.files.forEach(v => {
+      const row = document.createElement("label"); row.className="entry";
+      const cb = document.createElement("input"); cb.type="checkbox";
+      cb.onchange = () => { cb.checked ? M.picked.add(v.name) : M.picked.delete(v.name); updateOk(); };
+      const nm = document.createElement("span"); nm.textContent = "🎵 "+v.name;
+      const sz = document.createElement("span"); sz.className="sz"; sz.textContent = fmtSize(v.size);
+      row.append(cb,nm,sz); list.appendChild(row);
+    });
+    updateOk();
+  }catch(e){ toast(e.message); }
+}
+function updateOk(){
+  $("mOk").textContent = M.mode==="out" ? t("selectFolder") : (M.picked.size ? `${t("addSelected")} (${M.picked.size})` : t("addFolder"));
+}
+$("mUp").onclick = () => M.parent && loadDir(M.parent);
+$("mCancel").onclick = () => $("modal").classList.remove("open");
+$("mOk").onclick = () => {
+  if (M.mode==="out") $("outText").value = M.path;
+  else if (M.picked.size) M.picked.forEach(n => { const p=joinPath(M.path,n); if(!sources.includes(p)) sources.push(p); });
+  else if (!sources.includes(M.path)) sources.push(M.path);
+  $("modal").classList.remove("open"); renderSources(); persist(); updateRunBtn();
+};
+
+/* ── renombrar: ejecución y sondeo ── */
+function payload(mode){
+  const num = id => $(id).value.trim()==="" ? null : $(id).value.trim();
+  return { mode, inputs:sources, output:$("outText").value.trim(), format, mp3_quality:$("mp3_quality").value,
+    key_format:$("key_format").value, accidental:$("accidental").value, bpm_decimals:$("bpm_decimals").value,
+    bpm_min:num("bpm_min"), bpm_max:num("bpm_max"), analyze_seconds:num("analyze_seconds"),
+    settle:num("settle"), interval:num("interval"), write_tags:$("write_tags").checked, force:$("force").checked };
+}
+async function start(mode){
+  if (!sources.length || !$("outText").value.trim()) return toast(t("needSrcOut"));
+  persist();
+  try{
+    await api("/api/start", payload(mode));
+    since = 0; $("log").innerHTML = ""; showTab("log"); poll();
+  }catch(e){ toast(e.message); }
+}
+function colorize(line){
+  const d = document.createElement("div"); d.textContent = line;
+  if (/✗|error|falló/i.test(line)) d.className="e"; else if (/✓/.test(line)) d.className="ok"; else if (/^!/.test(line)) d.className="w";
+  else if (/^\s+→/.test(line)) d.className="d";
+  return d;
+}
+function renderState(st){ $("dot").className = "dot " + st; $("stateTxt").textContent = t(st); }
+async function poll(){
+  clearTimeout(pollTimer);
+  try{
+    const j = await api("/api/job?since="+since);
+    const log = $("log"), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
+    j.lines.forEach(l => log.appendChild(colorize(l))); since = j.total;
+    if (atEnd) log.scrollTop = log.scrollHeight;
+    const was = lastState; lastState = j.state; renderState(j.state);
+    $("bar").style.width = (j.state==="idle" ? 0 : j.progress.pct) + "%";
+    $("progLabel").textContent = j.state==="running" ? `${j.progress.label} ${j.progress.pct}%` : "";
+    $("cmd").textContent = j.cmd || "";
+    updateRunBtn();
+    if (was==="running" && j.state!=="running" && j.mode !== "dry") loadResults();
+    if (j.state==="running") pollTimer = setTimeout(poll, 600);
+  }catch(e){ pollTimer = setTimeout(poll, 2000); }
+}
+async function loadResults(){
+  const out = $("outText").value.trim(); const body = $("resBody"), stats = $("resStats");
+  if (!out){ body.innerHTML=""; stats.textContent=""; return; }
+  try{
+    const r = await api("/api/results?output="+encodeURIComponent(out));
+    if (!r.items.length){ stats.textContent=""; body.innerHTML = `<div class="empty">${t("noRes")}</div>`; return; }
+    const ok = r.items.filter(i=>i.status==="ok"), bad = r.items.length-ok.length;
+    stats.innerHTML = `<span><b>${r.items.length}</b> ${t("files")}</span><span><b>${ok.length}</b> ${t("ok")}</span>` +
+      (bad?`<span style="color:var(--bad)"><b>${bad}</b> ${t("failedN")}</span>`:"") + (r.csv?"<span>analysis.csv ✓</span>":"");
+    const tb = document.createElement("table");
+    tb.innerHTML = `<tr><th>${t("colId")}</th><th>${t("colState")}</th><th>${t("colBpm")}</th><th>${t("colKey")}</th><th>${t("colDur")}</th><th>${t("colOut")}</th></tr>`;
+    r.items.forEach(i => {
+      const tr = document.createElement("tr");
+      const cell = (txt, cls, sub) => { const td=document.createElement("td"); td.textContent=txt; if(cls) td.className=cls;
+        if (sub){ const s=document.createElement("small"); s.textContent=sub; td.appendChild(s); } tr.appendChild(td); return td; };
+      cell(i.id); cell(i.status==="ok"?"✓":"✗ "+(i.error||""), i.status==="ok"?"ok":"bad");
+      const okRow = i.status==="ok";
+      cell(okRow && i.bpm ? String(+(+i.bpm).toFixed(1)) : "—", okRow && i.bpm && i.bpm_conf < 0.35 ? "low" : "", okRow && i.bpm ? `conf ${i.bpm_conf}` + (i.bpm_conf < 0.35 ? " · " + t("lowConf") : "") : "");
+      cell(okRow && i.key_name && i.key_name !== "NA" ? i.key_name : "—", okRow && i.key_conf < 0.2 ? "low" : "", okRow && i.key ? `${i.key} · conf ${i.key_conf}` : "");
+      cell(i.duration ? fmtMs(i.duration) : "—");
+      cell(okRow && i.output ? i.output.file : "—", "", okRow && i.output ? `${i.output.format} · ${fmtSize(i.output.size)}` : "");
+      tb.appendChild(tr);
+    });
+    body.innerHTML = ""; body.appendChild(tb);
+  }catch(e){ body.innerHTML = `<div class="empty">${e.message}</div>`; }
+}
+function showTab(name){
+  document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active", x.dataset.tab===name));
+  $("tab-log").style.display = name==="log"?"":"none"; $("tab-res").style.display = name==="res"?"":"none";
+  if (name==="res") loadResults();
+}
+
+/* ── espectrograma ── */
+let specBusy = false, specState = "idle", specCards = [], specCancel = false;
+function setSpecState(st, label){
+  specState = st; $("sdot").className = "dot " + ({idle:"",running:"running",done:"done",failed:"failed"}[st]||"");
+  $("sstate").textContent = {idle:t("idle"),running:t("generating"),done:t("specDone"),failed:t("specErr")}[st];
+  $("slabel").textContent = label || "";
+}
+function specOptions(){
+  const v = id => $(id).value.trim();
+  return { width:v("s_width"), height:v("s_height"), color:v("s_color"), mode:v("s_mode"), fscale:v("s_fscale"), scale:v("s_scale"),
+    win:v("s_win"), drange:v("s_drange"), gain:v("s_gain"), fmin:v("s_fmin"), fmax:v("s_fmax"), start:v("s_start"), end:v("s_end"),
+    legend:$("s_legend").checked };
+}
+function updateSaveAll(){ $("specSaveAll").disabled = !specCards.some(c => c.id && !c.saved); }
+function addCard(file){
+  const card = { file, id:null, name:file.split(/[\\/]/).pop().replace(/\.[^.]+$/,"")+".spectrogram.png", url:null, saved:false };
+  const el = document.createElement("div"); el.className = "card";
+  const ttl = document.createElement("div"); ttl.className = "ttl";
+  const nm = document.createElement("span"); nm.textContent = card.name; nm.title = file;
+  const sv = document.createElement("button"); sv.className = "btn"; sv.textContent = t("save"); sv.disabled = true;
+  ttl.append(nm, sv);
+  const img = document.createElement("div"); img.className = "img"; img.textContent = t("generating");
+  el.append(ttl, img); $("gallery").appendChild(el); $("galleryEmpty").style.display = "none";
+  card.el = el; card.imgBox = img; card.saveBtn = sv;
+  sv.onclick = () => saveCard(card);
+  specCards.push(card); return card;
+}
+async function saveCard(card){
+  const out = $("outText").value.trim(); if (!out) return toast(t("needOut"));
+  try{ const r = await api("/api/spectrogram/save", { id:card.id, output:out }); card.saved = true; card.saveBtn.textContent = "✓"; card.saveBtn.disabled = true;
+    toast(t("saved")+" "+r.path, true); updateSaveAll(); return r; }catch(e){ toast(e.message); }
+}
+async function generate(){
+  if (specBusy || !sources.length) return;
+  persist(); specBusy = true; specCancel = false; updateRunBtn();
+  specCards.forEach(c => c.url && URL.revokeObjectURL(c.url)); specCards = []; $("gallery").innerHTML = ""; updateSaveAll();
+  setSpecState("running");
+  let failed = 0;
+  try{
+    const files = (await api("/api/expand", { inputs:sources })).files;
+    if (!files.length){ setSpecState("failed", t("noAudio")); return; }
+    const opts = specOptions();
+    for (let i = 0; i < files.length && !specCancel; i++){
+      $("sbar").style.width = Math.round(i / files.length * 100) + "%";
+      setSpecState("running", `${i+1}/${files.length}`);
+      const card = addCard(files[i]);
+      try{
+        const r = await api("/api/spectrogram", { file:files[i], options:opts });
+        card.id = r.id; card.name = r.name;
+        const blob = await api("/api/spectrogram/image?id="+r.id, undefined, true);
+        card.url = URL.createObjectURL(blob);
+        const im = document.createElement("img"); im.src = card.url; im.alt = r.name; im.onclick = () => openLightbox(card.url);
+        card.imgBox.innerHTML = ""; card.imgBox.appendChild(im); card.saveBtn.disabled = false;
+      }catch(e){ failed++; card.imgBox.className = "img err"; card.imgBox.textContent = "✗ " + e.message; }
+      updateSaveAll();
+    }
+    $("sbar").style.width = "100%";
+    setSpecState(failed ? "failed" : "done", failed ? `${failed} ✗` : "");
+  }catch(e){ setSpecState("failed", e.message); toast(e.message); }
+  finally{ specBusy = false; updateRunBtn(); }
+}
+function openLightbox(url){
+  const lb = $("lightbox"); $("lbImg").src = url; lb.classList.add("open","fit");
+}
+$("lightbox").onclick = e => {
+  const lb = $("lightbox");
+  if (lb.classList.contains("fit") && e.target.tagName === "IMG") lb.classList.remove("fit"); else if (!lb.classList.contains("fit") && e.target.tagName === "IMG") lb.classList.add("fit"); else lb.classList.remove("open");
+};
+document.addEventListener("keydown", e => { if (e.key === "Escape") $("lightbox").classList.remove("open"); });
+$("specBtn").onclick = generate;
+$("specSaveAll").onclick = async () => {
+  const out = $("outText").value.trim(); if (!out) return toast(t("needOut"));
+  let n = 0; for (const c of specCards) if (c.id && !c.saved){ if (await saveCard(c)) n++; }
+  if (n) toast(`${n} ${t("savedN")}: ${out}`, true);
+};
+
+/* ── eventos ── */
+document.querySelectorAll(".section h2").forEach(h => h.onclick = () => h.parentElement.classList.toggle("collapsed"));
+document.querySelectorAll(".tab").forEach(x => x.onclick = () => showTab(x.dataset.tab));
+document.querySelectorAll(".tool").forEach(x => x.onclick = () => setTool(x.dataset.tool));
+$("langBtn").onclick = () => { lang = lang==="es"?"en":"es"; store.set("ap.lang", lang); applyLang(); setTool(tool); };
+$("srcAdd").onclick = () => { const v=$("srcText").value.trim().replace(/^"|"$/g,""); if(v && !sources.includes(v)){ sources.push(v); $("srcText").value=""; renderSources(); persist(); } };
+$("srcText").onkeydown = e => { if (e.key==="Enter") $("srcAdd").click(); };
+$("srcBrowse").onclick = () => openBrowser("src", "");
+$("outBrowse").onclick = () => openBrowser("out", "");
+$("outText").oninput = () => { updateRunBtn(); persist(); };
+FIELDS.forEach(k => $(k).onchange = () => { updateExample(); persist(); });
+["write_tags","s_legend"].forEach(k => $(k).onchange = persist);
+$("runBtn").onclick = () => lastState==="running" ? api("/api/cancel", {}).then(poll).catch(e=>toast(e.message)) : start("run");
+$("dryBtn").onclick = () => start("dry");
+$("watchBtn").onclick = () => start("watch");
+$("openOut").onclick = () => api("/api/open", { path:$("outText").value.trim() }).catch(e=>toast(e.message));
+$("refreshRes").onclick = loadResults;
+
+(async function init(){
+  try{
+    S = await api("/api/state");
+    defaults(); restore(); renderSources();
+    if (location.hash === '#spec') tool = 'spec'; else if (location.hash === '#rename') tool = 'rename';
+    applyLang(); setTool(tool); poll();
+  }catch(e){ toast(e.message); }
+})();
+</script>
+</body>
+</html>
