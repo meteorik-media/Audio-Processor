@@ -67,6 +67,8 @@ def write_wav(path, frames):
         w.writeframes(frames)
 
 
+
+
 class PureFunctions(unittest.TestCase):
     def test_key_labels(self):
         self.assertEqual(ap.key_label(2, "minor"), "Dm")
@@ -83,26 +85,43 @@ class PureFunctions(unittest.TestCase):
         self.assertEqual(sorted(ap.CAMELOT_MAJOR.values()), list(range(1, 13)))
         self.assertEqual(sorted(ap.CAMELOT_MINOR.values()), list(range(1, 13)))
 
-    def test_duration_and_bpm_labels(self):
-        self.assertEqual(ap.duration_label(185), "03m05s")
-        self.assertEqual(ap.duration_label(0), "00m00s")
-        self.assertEqual(ap.duration_label(59.6), "01m00s")
-        self.assertEqual(ap.duration_label(60.5), "01m01s")
-        self.assertEqual(ap.duration_label(125 * 60 + 3), "125m03s")
+    def test_duration_label_is_mm_ss_ms(self):
+        self.assertEqual(ap.duration_label(185.123), "03:05:123")
+        self.assertEqual(ap.duration_label(0), "00:00:000")
+        self.assertEqual(ap.duration_label(59.9996), "01:00:000")
+        self.assertEqual(ap.duration_label(0.5), "00:00:500")
+        self.assertEqual(ap.duration_label(125 * 60 + 3.007), "125:03:007")
+        self.assertEqual(ap.duration_label(-3), "00:00:000")
+
+    def test_bpm_label(self):
         self.assertEqual(ap.bpm_label(139.6), "140")
         self.assertEqual(ap.bpm_label(140.5, 1), "140.5")
         self.assertEqual(ap.bpm_label(140.0, 1), "140")
         self.assertEqual(ap.bpm_label(None), "NA")
 
-    def test_build_name_never_stacks_suffixes(self):
-        a = {"bpm": 140.0, "tonic": 2, "mode": "minor"}
-        first = ap.build_name("mi_loop", a, 185, ap.RENAME_DEFAULTS)
-        self.assertEqual(first, "mi_loop__140bpm__Dm__03m05s")
-        self.assertEqual(ap.build_name(first, a, 185, ap.RENAME_DEFAULTS), first)
-        na = ap.build_name("x", {"bpm": None, "tonic": None, "mode": None}, 5, ap.RENAME_DEFAULTS)
-        self.assertEqual(na, "x__NAbpm__NA__00m05s")
-        self.assertEqual(ap.strip_suffix(na), "x")
-        self.assertEqual(ap.strip_suffix("a__b__c"), "a__b__c")
+    def test_mood_labels(self):
+        self.assertEqual(ap.mood_label("minor", 0.8, 2), "Melancholic")
+        self.assertEqual(ap.mood_label("minor", 0.8, 5), "Dark")
+        self.assertEqual(ap.mood_label("minor", 0.8, 9), "Aggressive")
+        self.assertEqual(ap.mood_label("major", 0.8, 2), "Chill")
+        self.assertEqual(ap.mood_label("major", 0.8, 5), "Happy")
+        self.assertEqual(ap.mood_label("major", 0.8, 7), "Uplifting")
+        self.assertEqual(ap.mood_label("major", 0.8, 10), "Euphoric")
+        self.assertEqual(ap.mood_label("minor", 0.05, 5), "Neutral")  # tonalidad dudosa: no se usa el modo
+        self.assertEqual(ap.mood_label(None, 0.0, 9), "Energetic")
+        self.assertIsNone(ap.mood_label("minor", 0.9, None))
+
+    def test_csv_columns_and_skips_errors(self):
+        rows = [{"file": "a, b.wav", "bpm": "140", "key": "Dm", "energy": 7, "mood": "Dark",
+                 "start": "00:00:000", "end": "00:14:203", "duration": "00:14:203"},
+                {"file": "mal.wav", "error": "ffprobe no pudo leer el archivo"},
+                {"file": "mudo.wav", "bpm": "", "key": "", "energy": "", "mood": "",
+                 "start": "00:00:000", "end": "00:05:000", "duration": "00:05:000"}]
+        lines = ap.csv_text(rows).splitlines()
+        self.assertEqual(lines[0], "archivo,bpm,tonalidad,energia,mood,inicio,fin,duracion")
+        self.assertEqual(lines[1], '"a, b.wav",140,Dm,7,Dark,00:00:000,00:14:203,00:14:203')
+        self.assertEqual(lines[2], "mudo.wav,,,,,00:00:000,00:05:000,00:05:000")
+        self.assertEqual(len(lines), 3)
 
     def test_parse_time(self):
         self.assertEqual(ap.parse_time("1:30"), 90)
@@ -122,17 +141,23 @@ class PureFunctions(unittest.TestCase):
                 ap.spec_options(bad)
 
     def test_build_cli_args_validates(self):
-        mode, argv, _ = ap.build_cli_args({"mode": "dry", "inputs": ["a"], "output": "o", "format": "mp3",
-                                           "mp3_quality": "v0", "bpm_min": "80", "write_tags": False})
-        self.assertEqual(mode, "run")
-        self.assertIn("--dry-run", argv)
-        self.assertIn("--no-tags", argv)
-        base = {"mode": "run", "inputs": ["a"], "output": "o"}
-        for bad in ({"mode": "x", "inputs": ["a"], "output": "o"}, {"mode": "run", "inputs": [], "output": "o"},
-                    {**base, "output": ""}, {**base, "format": "ogg"},
-                    {**base, "bpm_min": "200", "bpm_max": "100"}, {**base, "bpm_min": "abc"}):
+        mode, argv, _ = ap.build_cli_args({"mode": "convert", "inputs": ["a"], "output": "o", "format": "wav",
+                                           "wav_bits": "24", "mp3_quality": "v0"})
+        self.assertEqual(mode, "convert")
+        self.assertIn("--wav-bits", argv)
+        base = {"mode": "convert", "inputs": ["a"], "output": "o"}
+        for bad in ({"mode": "x", "inputs": ["a"], "output": "o"}, {"mode": "convert", "inputs": [], "output": "o"},
+                    {**base, "output": ""}, {**base, "format": "ogg"}, {**base, "wav_bits": "20"},
+                    {**base, "mp3_quality": "1k"}, {**base, "settle": "abc"}):
             with self.assertRaises((ValueError, SystemExit), msg=str(bad)):
                 ap.build_cli_args(bad)
+
+    def test_analysis_options_validation(self):
+        self.assertEqual(ap.analysis_options({"bpm_min": "80", "key_format": "camelot"})["bpm_min"], 80.0)
+        for bad in ({"bpm_min": "200", "bpm_max": "100"}, {"key_format": "x"}, {"bpm_min": "abc"}, {"bpm_decimals": 2},
+                    {"split": "x"}, {"split": "auto", "min_section": "1"}):
+            with self.assertRaises(ValueError, msg=str(bad)):
+                ap.analysis_options(bad)
 
 
 @unittest.skipUnless(HAVE_FFMPEG and np is not None, "necesita ffmpeg y numpy")
@@ -150,23 +175,88 @@ class Analysis(unittest.TestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def test_bpm_and_key(self):
-        opts = dict(ap.RENAME_DEFAULTS)
+        opts = dict(ap.ANALYZE_DEFAULTS)
         for name, (bpm, tonic, minor) in self.cases.items():
             info = ap.probe(self.tmp / f"{name}.wav")
             res = ap.analyze_audio(self.tmp / f"{name}.wav", info["duration"], opts)
             self.assertAlmostEqual(res["bpm"], bpm, delta=0.6, msg=name)
             self.assertEqual((res["tonic"], res["mode"]), (tonic, "minor" if minor else "major"), name)
+            self.assertIn(res["energy"], range(1, 11), name)
+            self.assertTrue(res["mood"], name)
+
+    def test_energy_follows_loudness_and_density(self):
+        quiet, loud = self.tmp / "quiet.wav", self.tmp / "loud.wav"
+        t = np.arange(SR * 20) / SR
+        pad = sum(np.sin(2 * np.pi * f * t) for f in (220, 261.63, 329.63)) * 0.03
+        write_wav(quiet, (pad * 32767).astype("<i2").tobytes())
+        noise = np.random.RandomState(0).randn(len(t)) * 0.5 * (np.sin(2 * np.pi * 3 * t) > 0)
+        write_wav(loud, (np.clip(noise, -1, 1) * 32767).astype("<i2").tobytes())
+        opts = dict(ap.ANALYZE_DEFAULTS)
+        e_quiet = ap.analyze_audio(quiet, 20.0, opts)["energy"]
+        e_loud = ap.analyze_audio(loud, 20.0, opts)["energy"]
+        self.assertLessEqual(e_quiet, 4)
+        self.assertGreaterEqual(e_loud, 7)
 
     def test_silence_and_short_audio_do_not_crash(self):
         silent = self.tmp / "silence.wav"
         write_wav(silent, b"\0\0" * SR * 5)
-        res = ap.analyze_audio(silent, 5.0, dict(ap.RENAME_DEFAULTS))
+        res = ap.analyze_audio(silent, 5.0, dict(ap.ANALYZE_DEFAULTS))
         self.assertIsNone(res["bpm"])
         self.assertIsNone(res["tonic"])
+        self.assertIsNone(res["energy"])
+        self.assertIsNone(res["mood"])
+        row = ap.analysis_row(silent, res, 5.0, dict(ap.ANALYZE_DEFAULTS))
+        self.assertEqual((row["bpm"], row["key"], row["energy"], row["mood"], row["duration"]), ("", "", "", "", "00:05:000"))
         tiny = self.tmp / "tiny.wav"
         write_wav(tiny, b"\x10\x10" * 2000)
-        res = ap.analyze_audio(tiny, 0.05, dict(ap.RENAME_DEFAULTS))
+        res = ap.analyze_audio(tiny, 0.05, dict(ap.ANALYZE_DEFAULTS))
         self.assertIsNone(res["bpm"])
+
+    def two_part_track(self):
+        """20 s de pad suave + 20 s de ruido a golpes: un cambio claro en el segundo 20."""
+        path = self.tmp / "two_parts.wav"
+        t = np.arange(SR * 40) / SR
+        pad = sum(np.sin(2 * np.pi * f * t) for f in (220, 261.63, 329.63)) * 0.03
+        noise = np.random.RandomState(1).randn(len(t)) * 0.5 * (np.sin(2 * np.pi * 3 * t) > 0)
+        y = np.where(t < 20, pad, noise)
+        write_wav(path, (np.clip(y, -1, 1) * 32767).astype("<i2").tobytes())
+        return path
+
+    def test_split_off_gives_one_whole_track_row(self):
+        path = self.two_part_track()
+        rows = ap.analyze_file(path, dict(ap.ANALYZE_DEFAULTS))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["start"], rows[0]["end"], rows[0]["duration"]),
+                         ("00:00:000", "00:40:000", "00:40:000"))
+
+    def test_split_auto_cuts_where_the_music_changes(self):
+        path = self.two_part_track()
+        opts = dict(ap.ANALYZE_DEFAULTS, split="auto")
+        rows = ap.analyze_file(path, opts)
+        self.assertEqual(len(rows), 2, rows)
+        self.assertEqual(rows[0]["start"], "00:00:000")
+        self.assertEqual(rows[0]["end"], rows[1]["start"])
+        self.assertEqual(rows[1]["end"], "00:40:000")
+        cut = int(rows[0]["end"].split(":")[0]) * 60 + int(rows[0]["end"].split(":")[1])
+        self.assertAlmostEqual(cut, 20, delta=2)
+        self.assertLess(rows[0]["energy"], rows[1]["energy"], "la parte suave es menos enérgica")
+        self.assertEqual(rows[0]["file"], rows[1]["file"])
+
+    def test_split_auto_respects_min_section_and_ignores_steady_tracks(self):
+        steady = self.tmp / "dm_140.wav"
+        rows = ap.analyze_file(steady, dict(ap.ANALYZE_DEFAULTS, split="auto"))
+        self.assertEqual(len(rows), 1, "una pista estable no se parte")
+        short = ap.analyze_file(self.two_part_track(), dict(ap.ANALYZE_DEFAULTS, split="auto", min_section=25))
+        self.assertEqual(len(short), 1, "con secciones de al menos 25 s no cabe un corte en 20 s")
+
+    def test_split_fixed_makes_equal_contiguous_sections(self):
+        rows = ap.analyze_file(self.two_part_track(), dict(ap.ANALYZE_DEFAULTS, split="fixed", split_seconds=15))
+        self.assertEqual(len(rows), 3)  # 40 s / 15 s -> 3 trozos de ~13,3 s
+        self.assertEqual(rows[0]["start"], "00:00:000")
+        self.assertEqual(rows[-1]["end"], "00:40:000")
+        for a, b in zip(rows, rows[1:]):
+            self.assertEqual(a["end"], b["start"])
+        self.assertEqual(rows[0]["duration"], "00:13:333")
 
 
 @unittest.skipUnless(HAVE_FFMPEG and np is not None, "necesita ffmpeg y numpy")
@@ -188,41 +278,34 @@ class EndToEnd(unittest.TestCase):
         return subprocess.run([sys.executable, str(Path(ap.__file__)), *argv], capture_output=True, text=True,
                               encoding="utf-8", errors="replace")
 
-    def test_original_format_is_a_renamed_copy_and_idempotent(self):
-        out = self.tmp / "orig"
-        r = self.run_cli("run", str(self.src), "-o", str(out))
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        names = sorted(p.relative_to(out).as_posix() for p in out.rglob("*.wav"))
-        self.assertEqual(names, ["sub/uno__128bpm__C__00m16s.wav", "uno__140bpm__Dm__00m14s.wav"])
-        self.assertEqual((out / "uno__140bpm__Dm__00m14s.wav").read_bytes(), (self.src / "uno.wav").read_bytes())
-        self.assertTrue((self.src / "uno.wav").is_file(), "el original no se toca")
-        self.assertTrue((out / "analysis.csv").is_file())
-        again = self.run_cli("run", str(self.src), "-o", str(out))
-        self.assertIn("ya al día 2", again.stdout)
-        self.assertIn("procesados 0", again.stdout)
+    def probe_stream(self, path):
+        out = subprocess.run([ap.tool("ffprobe"), "-v", "error", "-select_streams", "a:0", "-show_entries",
+                              "stream=codec_name,sample_rate", "-print_format", "json", str(path)],
+                             capture_output=True, text=True).stdout
+        return json.loads(out)["streams"][0]
 
-    def test_mp3_conversion_writes_tags_and_reprocess_replaces_old_name(self):
+    def test_convert_to_mp3_keeps_the_name_and_is_idempotent(self):
         out = self.tmp / "mp3"
-        r = self.run_cli("run", str(self.src / "uno.wav"), "-o", str(out), "--format", "mp3", "--mp3-quality", "v2")
+        r = self.run_cli("convert", str(self.src), "-o", str(out), "--mp3-quality", "v2")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        mp3 = out / "uno__140bpm__Dm__00m14s.mp3"
-        self.assertTrue(mp3.is_file())
-        probe = subprocess.run([ap.tool("ffprobe"), "-v", "error", "-show_format", "-print_format", "json", str(mp3)],
-                               capture_output=True, text=True)
-        tags = json.loads(probe.stdout)["format"]["tags"]
-        self.assertEqual((tags.get("TBPM"), tags.get("TKEY")), ("140", "Dm"))
-        # cambia el formato del nombre: la salida vieja de este mismo origen se sustituye, no se acumula
-        r = self.run_cli("run", str(self.src / "uno.wav"), "-o", str(out), "--format", "mp3", "--mp3-quality", "v2",
-                         "--key-format", "camelot")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(sorted(p.name for p in out.glob("*.mp3")), ["uno__140bpm__7A__00m14s.mp3"])
+        names = sorted(p.relative_to(out).as_posix() for p in out.rglob("*.mp3"))
+        self.assertEqual(names, ["sub/uno.mp3", "uno.mp3"])
+        self.assertEqual(self.probe_stream(out / "uno.mp3")["codec_name"], "mp3")
+        self.assertTrue((self.src / "uno.wav").is_file(), "el original no se toca")
+        self.assertFalse((out / "analysis.csv").exists())
+        again = self.run_cli("convert", str(self.src), "-o", str(out), "--mp3-quality", "v2")
+        self.assertIn("ya al día 2", again.stdout)
+        self.assertIn("convertidos 0", again.stdout)
 
-    def test_dry_run_writes_nothing(self):
-        out = self.tmp / "dry"
-        r = self.run_cli("run", str(self.src), "-o", str(out), "--dry-run")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("uno__140bpm__Dm__00m14s", r.stdout)
-        self.assertFalse(out.exists())
+    def test_convert_to_wav_and_format_change_replaces_old_output(self):
+        out = self.tmp / "fmt"
+        mp3 = self.run_cli("convert", str(self.src / "uno.wav"), "-o", str(out), "--format", "mp3", "--mp3-quality", "v2")
+        self.assertEqual(mp3.returncode, 0, mp3.stdout + mp3.stderr)
+        self.assertEqual([p.name for p in out.glob("*.mp3")], ["uno.mp3"])
+        wav = self.run_cli("convert", str(self.src / "uno.wav"), "-o", str(out), "--format", "wav", "--wav-bits", "24")
+        self.assertEqual(wav.returncode, 0, wav.stdout + wav.stderr)
+        self.assertEqual([p.name for p in out.glob("*.mp3")], [], "la salida vieja del mismo origen se sustituye")
+        self.assertEqual(self.probe_stream(out / "uno.wav")["codec_name"], "pcm_s24le")
 
     def test_name_collision_gets_a_number(self):
         out = self.tmp / "coll"
@@ -230,10 +313,9 @@ class EndToEnd(unittest.TestCase):
         for d in (a, b):
             d.mkdir()
             shutil.copy(self.src / "uno.wav", d / "uno.wav")
-        r = self.run_cli("run", str(a / "uno.wav"), str(b / "uno.wav"), "-o", str(out))
+        r = self.run_cli("convert", str(a / "uno.wav"), str(b / "uno.wav"), "-o", str(out), "--format", "wav")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(sorted(p.name for p in out.glob("*.wav")),
-                         ["uno__140bpm__Dm__00m14s (2).wav", "uno__140bpm__Dm__00m14s.wav"])
+        self.assertEqual(sorted(p.name for p in out.glob("*.wav")), ["uno (2).wav", "uno.wav"])
 
     def test_broken_file_is_counted_and_does_not_stop_the_batch(self):
         d = self.tmp / "broken"
@@ -241,10 +323,28 @@ class EndToEnd(unittest.TestCase):
         (d / "mal.wav").write_bytes(b"esto no es audio")
         shutil.copy(self.src / "uno.wav", d / "bien.wav")
         out = self.tmp / "brk"
-        r = self.run_cli("run", str(d), "-o", str(out))
+        r = self.run_cli("convert", str(d), "-o", str(out))
         self.assertEqual(r.returncode, 1)
         self.assertIn("con error 1", r.stdout)
-        self.assertTrue(any(out.glob("bien__*.wav")))
+        self.assertTrue((out / "bien.mp3").is_file())
+
+    def test_analyze_cli_writes_the_csv(self):
+        csv_path = self.tmp / "res" / "analysis.csv"
+        r = self.run_cli("analyze", str(self.src), "-o", str(csv_path))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        raw = csv_path.read_bytes()
+        self.assertTrue(raw.startswith(b"\xef\xbb\xbf"), "BOM para que Excel lo abra bien")
+        rows = [line.split(",") for line in raw.decode("utf-8-sig").splitlines()]
+        self.assertEqual(rows[0], ["archivo", "bpm", "tonalidad", "energia", "mood", "inicio", "fin", "duracion"])
+        by_bpm = sorted(rows[1:], key=lambda x: x[1])
+        self.assertEqual([x[1:3] for x in by_bpm], [["128", "C"], ["140", "Dm"]])
+        for row in rows[1:]:
+            self.assertTrue(1 <= int(row[3]) <= 10)
+            self.assertEqual(row[5], "00:00:000")
+            self.assertEqual(row[6], row[7], "pista completa: fin == duración")
+            self.assertRegex(row[7], r"^\d{2,}:\d{2}:\d{3}$")
+        self.assertNotIn(b"\r\r", raw)
+        self.assertFalse(list(self.tmp.glob("res/*.tmp")))
 
     def test_spectrogram_cli(self):
         out = self.tmp / "spec"
@@ -313,10 +413,10 @@ class WebServer(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual([f["name"] for f in d["files"]], ["tema.wav"])
 
-    def test_full_rename_job_through_the_api(self):
+    def test_full_convert_job_through_the_api(self):
         out = self.tmp / "out"
-        code, r = self.req("/api/start", {"mode": "run", "inputs": [str(self.src)], "output": str(out),
-                                          "format": "original"})
+        code, r = self.req("/api/start", {"mode": "convert", "inputs": [str(self.src)], "output": str(out),
+                                          "format": "wav", "wav_bits": "16"})
         self.assertEqual(code, 200, r)
         j = {}
         for _ in range(120):
@@ -326,7 +426,33 @@ class WebServer(unittest.TestCase):
             time.sleep(0.5)
         self.assertEqual(j["state"], "done", j)
         code, res = self.req("/api/results?output=" + str(out).replace("\\", "/"))
-        self.assertEqual([(i["status"], round(i["bpm"]), i["key_name"]) for i in res["items"]], [("ok", 140, "Dm")])
+        self.assertEqual([(i["status"], i["id"], i["output"]["file"]) for i in res["items"]], [("ok", "tema", "tema.wav")])
+        self.assertEqual(self.req("/api/start", {"mode": "run", "inputs": [str(self.src)], "output": str(out)})[0], 400)
+
+    def test_analyze_api_csv_and_save(self):
+        code, r = self.req("/api/analyze", {"file": str(self.src / "tema.wav"), "options": {"key_format": "camelot"}})
+        self.assertEqual(code, 200, r)
+        self.assertEqual(len(r["rows"]), 1)
+        row = r["rows"][0]
+        self.assertEqual((row["file"], row["bpm"], row["key"]), ("tema.wav", "140", "7A"))
+        self.assertTrue(1 <= row["energy"] <= 10 and row["mood"])
+        bad = self.tmp / "mal.wav"
+        bad.write_bytes(b"no es audio")
+        err = self.req("/api/analyze", {"file": str(bad)})[1]["rows"][0]
+        parts = self.req("/api/analyze", {"file": str(self.src / "tema.wav"),
+                                          "options": {"split": "fixed", "split_seconds": "5"}})[1]["rows"]
+        self.assertGreater(len(parts), 1)
+        self.assertTrue(err["error"])
+        self.assertEqual(self.req("/api/analyze", {"file": str(self.src / "tema.wav"), "options": {"bpm_min": "x"}})[0], 400)
+        self.assertEqual(self.req("/api/analyze", {"file": str(self.tmp / "nada.txt")})[0], 400)
+        code, csv_bytes = self.req("/api/analyze/csv", {"rows": [row, err]}, raw=True)
+        self.assertEqual(code, 200)
+        lines = csv_bytes.decode("utf-8-sig").splitlines()
+        self.assertEqual(lines[0], "archivo,bpm,tonalidad,energia,mood,inicio,fin,duracion")
+        self.assertEqual(len(lines), 2, "la fila con error no va al CSV")
+        saved = self.req("/api/analyze/save", {"rows": [row], "output": str(self.tmp / "csvout")})[1]
+        self.assertTrue(Path(saved["path"]).is_file())
+        self.assertEqual(self.req("/api/analyze/save", {"rows": [row], "output": ""})[0], 400)
 
     def test_spectrogram_api_serves_by_id_only(self):
         code, r = self.req("/api/spectrogram", {"file": str(self.src / "tema.wav"),
@@ -351,8 +477,8 @@ class WebServer(unittest.TestCase):
                                                        "options": {"color": "x"}})[0], 400)
 
     def test_expand_folders(self):
-        code, r = self.req("/api/expand", {"inputs": [str(self.src)]})
-        self.assertEqual([Path(f).name for f in r["files"]], ["tema.wav"])
+        code, r = self.req("/api/expand", {"inputs": [str(self.src), str(self.src / "tema.wav")]})
+        self.assertEqual([Path(f).name for f in r["files"]], ["tema.wav"], "sin repetidos")
 
 
 if __name__ == "__main__":

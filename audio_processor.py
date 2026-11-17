@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Audio Processor — analiza audio (BPM, tonalidad, duración) y lo renombra, y genera espectrogramas.
+"""Audio Processor — convierte audio a mp3/wav, lo analiza a un CSV (BPM, tonalidad, energía, mood,
+duración) y genera espectrogramas.
 
-    nombre_original__140bpm__Dm__03m05s.mp3
+    archivo   bpm  tonalidad  energia  mood  duracion
+    loop.wav  140  Dm         7        Dark  00:14:203
 
-Salida en el formato original (copia, sin tocar el archivo) o convertida a mp3. Los originales nunca
-se modifican. Necesita ffmpeg/ffprobe en el PATH y numpy (para el análisis). El espectrograma usa
-solo ffmpeg. Es idempotente: lo ya procesado se salta.
+Los originales nunca se modifican. Necesita ffmpeg/ffprobe en el PATH; el análisis además usa numpy.
+Convertir es idempotente: lo ya procesado se salta.
 
 Uso rápido:
     python audio_processor.py serve          (interfaz web local, la forma más cómoda)
     python audio_processor.py doctor
-    python audio_processor.py run SAMPLES/ -o SALIDA/ --format mp3
+    python audio_processor.py convert SAMPLES/ -o SALIDA/ --format wav
+    python audio_processor.py analyze SAMPLES/ -o analysis.csv
     python audio_processor.py spectrogram cancion.wav -o PNGS/ --color magma
 """
 from __future__ import annotations
@@ -33,7 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 AUDIO_EXTS = {".mp3", ".wav", ".flac", ".aif", ".aiff", ".m4a", ".aac", ".ogg", ".opus", ".wma", ".alac"}
 MANIFEST_NAME = "manifest.json"
@@ -41,18 +43,27 @@ CSV_NAME = "analysis.csv"
 SPEC_DIR_NAME = "spectrograms"
 
 # Valores por defecto de cada herramienta (la web los lee de aquí, así CLI y web nunca se desincronizan).
-RENAME_DEFAULTS = {
-    "format": "original",      # original | mp3
+CONVERT_DEFAULTS = {
+    "format": "mp3",           # mp3 | wav
     "mp3_quality": "320k",     # 320k 256k 192k 128k v0 v2
+    "wav_bits": 16,            # 16 | 24
+}
+ANALYZE_DEFAULTS = {
     "key_format": "short",     # short (Dm) | long (Dmin) | camelot (7A)
     "accidental": "sharp",     # sharp (F#) | flat (Gb)
     "bpm_min": 70.0,
     "bpm_max": 190.0,
-    "bpm_decimals": 0,         # 0 -> 140bpm ; 1 -> 140.5bpm
-    "analyze_seconds": 120.0,  # 0 = pista completa
-    "write_tags": True,        # solo al convertir a mp3: escribe BPM y tonalidad en las etiquetas ID3
+    "bpm_decimals": 0,         # 0 -> 140 ; 1 -> 140.5
+    "analyze_seconds": 120.0,  # 0 = pista completa (se ignora al fragmentar: ahí se analiza todo)
+    "split": "off",            # off = una fila por archivo | auto = por cambios | fixed = ventanas iguales
+    "min_section": 10.0,       # s: duración mínima de una sección (split auto)
+    "split_seconds": 15.0,     # s: tamaño aproximado de cada sección (split fixed)
 }
+SPLIT_MODES = ("off", "auto", "fixed")
 MP3_QUALITIES = ("320k", "256k", "192k", "128k", "v0", "v2")
+WAV_BITS = (16, 24)
+CSV_COLUMNS = ("archivo", "bpm", "tonalidad", "energia", "mood", "inicio", "fin", "duracion")
+CSV_FIELDS = ("file", "bpm", "key", "energy", "mood", "start", "end", "duration")  # claves de cada fila, en el mismo orden
 SPEC_DEFAULTS = {
     "width": 1920, "height": 1080,
     "color": "magma", "scale": "log", "fscale": "lin", "win": "hann",
@@ -76,9 +87,6 @@ KK_MAJOR = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.
 KK_MINOR = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
 TP_MAJOR = [5.0, 2.0, 3.5, 2.0, 4.5, 4.0, 2.0, 4.5, 2.0, 3.5, 1.5, 4.0]
 TP_MINOR = [5.0, 2.0, 3.5, 4.5, 2.0, 4.0, 2.0, 4.5, 3.5, 2.0, 1.5, 4.0]
-
-# Sufijo que añade esta herramienta; se quita antes de volver a añadirlo para no apilar nombres.
-SUFFIX_RE = re.compile(r"(?:__(?:NA|\d+(?:\.\d+)?)bpm__[^_\\/]+__\d+m\d{2}s)+$")
 
 
 # ───────────────────────── utilidades ─────────────────────────
@@ -120,6 +128,12 @@ def parse_time(text):
 def fmt_hms(seconds):
     seconds = max(0, int(round(seconds)))
     return f"{seconds // 3600:02d}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
+
+
+def duration_label(seconds):
+    """mm:ss:ms (ms con 3 dígitos); los minutos pueden pasar de 99. 185.123 -> '03:05:123'."""
+    total_ms = int(round(max(0.0, seconds) * 1000))
+    return f"{total_ms // 60000:02d}:{total_ms // 1000 % 60:02d}:{total_ms % 1000:03d}"
 
 
 def fmt_size(n):
@@ -380,18 +394,62 @@ def estimate_key(chroma):
     return best[1], best[2], conf
 
 
+def spectral_centroid(y, sr=ANALYSIS_SR, n_fft=2048):
+    """Centroide espectral medio en Hz (qué tan 'brillante' es el audio)."""
+    import numpy as np
+    power, count = None, 0
+    for mag in _stft_mag_blocks(y, n_fft, n_fft, block=128):
+        p = (mag ** 2).sum(axis=0)
+        power = p if power is None else power + p
+        count += len(mag)
+    if power is None or float(power.sum()) <= 0:
+        return 0.0
+    freqs = np.fft.rfftfreq(n_fft, 1.0 / sr)
+    return float((freqs * power).sum() / power.sum())
+
+
+def estimate_energy(y, env, bpm):
+    """Energía 1–10 (heurística): volumen (RMS), densidad de golpes, brillo y tempo. y SIN normalizar."""
+    import numpy as np
+    rms_db = 20.0 * np.log10(float(np.sqrt(np.mean(y.astype(np.float64) ** 2))) + 1e-9)
+    loud = float(np.clip((rms_db + 32.0) / 22.0, 0.0, 1.0))                 # -32 dBFS -> 0 ... -10 dBFS -> 1
+    onset = float(np.clip(float(np.mean(env)) / 2.0, 0.0, 1.0))             # golpes nuevos por instante
+    centroid = spectral_centroid(y)
+    bright = float(np.clip(np.log2(max(centroid, 1.0) / 300.0) / np.log2(4000.0 / 300.0), 0.0, 1.0))
+    tempo = float(np.clip((bpm - 70.0) / 105.0, 0.0, 1.0)) if bpm else 0.5
+    score = 0.35 * loud + 0.25 * onset + 0.2 * bright + 0.2 * tempo
+    return int(np.clip(1 + round(9 * score), 1, 10))
+
+
+def mood_label(mode, key_conf, energy):
+    """Etiqueta de ánimo (en inglés) a partir del modo mayor/menor y la energía. Es una heurística."""
+    if energy is None:
+        return None
+    if mode is None or key_conf < 0.1:  # tonalidad dudosa: no nos fiamos del modo
+        return "Chill" if energy <= 3 else "Energetic" if energy >= 8 else "Neutral"
+    if mode == "minor":
+        return "Melancholic" if energy <= 3 else "Dark" if energy <= 6 else "Aggressive"
+    return "Chill" if energy <= 3 else "Happy" if energy <= 5 else "Uplifting" if energy <= 7 else "Euphoric"
+
+
 def analyze_audio(path, duration, opts):
-    """Analiza un archivo. Devuelve dict con bpm, key y confianzas (None si no se pudo estimar)."""
+    """Analiza un archivo. Devuelve dict con bpm, key, energía, mood y confianzas (None si no se pudo estimar)."""
     import numpy as np
     window = float(opts.get("analyze_seconds") or 0)
     start, length = 0.0, 0.0
     if window and duration > window:
         start, length = (duration - window) / 2.0, window
-    y = decode_mono(path, start, length)
+    return analyze_samples(decode_mono(path, start, length), opts)
+
+
+def analyze_samples(y, opts):
+    """Analiza un tramo ya decodificado (mono, ANALYSIS_SR). Mismo resultado que analyze_audio."""
+    import numpy as np
     result = {"bpm": None, "bpm_conf": 0.0, "tonic": None, "mode": None, "key_conf": 0.0,
-              "analyzed_seconds": round(len(y) / ANALYSIS_SR, 1)}
+              "energy": None, "mood": None, "analyzed_seconds": round(len(y) / ANALYSIS_SR, 1)}
     if len(y) < ANALYSIS_SR * 1.0 or float(np.abs(y).max()) < 1e-4:
         return result  # muy corto o silencio
+    raw = y
     y = y / float(np.abs(y).max())
     env, fps = onset_envelope(y)
     bpm, conf = estimate_tempo(env, fps, float(opts["bpm_min"]), float(opts["bpm_max"]))
@@ -400,10 +458,49 @@ def analyze_audio(path, duration, opts):
     key = estimate_key(chroma)
     if key:
         result["tonic"], result["mode"], result["key_conf"] = key[0], key[1], round(key[2], 2)
+    result["energy"] = estimate_energy(raw, env, bpm)
+    result["mood"] = mood_label(result["mode"], result["key_conf"], result["energy"])
     return result
 
 
-# ───────────────────────── nombres ─────────────────────────
+def section_cuts(y, mode, min_len, window, sr=ANALYSIS_SR):
+    """Instantes (s) donde partir la pista en secciones. `fixed`: trozos iguales de ~`window` s.
+    `auto`: donde cambian el volumen, el brillo o la densidad de golpes (cada sección dura al menos `min_len`)."""
+    import numpy as np
+    total = len(y) / sr
+    if mode == "fixed":
+        n = max(1, int(round(total / max(window, 1.0))))
+        return [total * i / n for i in range(1, n)]
+    n = int(total)
+    min_len = max(float(min_len), 2.0)
+    if n < 2 * min_len:
+        return []
+    env, fps = onset_envelope(y)
+    feats = np.zeros((n, 3))
+    for i in range(n):
+        blk = y[i * sr:(i + 1) * sr].astype(np.float64)
+        rms_db = 20.0 * np.log10(float(np.sqrt(np.mean(blk ** 2))) + 1e-9)
+        a, b = int(i * fps), max(int(i * fps) + 1, int((i + 1) * fps))
+        feats[i] = (max(rms_db, -60.0) / 6.0,                                   # 6 dB = 1 unidad
+                    np.log2(max(spectral_centroid(blk), 50.0)) / 0.5,           # media octava = 1 unidad
+                    float(np.mean(env[a:b])) / 0.5 if a < len(env) else 0.0)    # densidad de golpes
+    w = max(3, int(min_len * 0.6))
+    score = np.zeros(n)
+    for t in range(2, n - 1):
+        prev, nxt = feats[max(0, t - w):t], feats[t:t + w]
+        if len(prev) >= 2 and len(nxt) >= 2:
+            score[t] = float(np.linalg.norm(nxt.mean(axis=0) - prev.mean(axis=0)))
+    cuts = []
+    for t in np.argsort(-score):
+        if score[t] < 1.0:
+            break
+        if t < min_len or total - t < min_len or any(abs(t - c) < min_len for c in cuts):
+            continue
+        cuts.append(float(t))
+    return sorted(cuts)
+
+
+# ───────────────────────── etiquetas del análisis ─────────────────────────
 
 def key_label(tonic, mode, key_format="short", accidental="sharp"):
     if tonic is None or mode is None:
@@ -422,21 +519,59 @@ def bpm_label(bpm, decimals=0):
     return f"{bpm:.1f}".rstrip("0").rstrip(".") if decimals else str(int(round(bpm)))
 
 
-def duration_label(seconds):
-    total = int(max(0.0, seconds) + 0.5)  # redondeo "normal" (60.5 -> 61), igual que la interfaz
-    return f"{total // 60:02d}m{total % 60:02d}s"
+def analysis_row(path, analysis, duration, opts, start=0.0, end=None):
+    """Una fila del CSV/tabla (pista completa o una sección start–end). Lo que no se pudo estimar queda vacío."""
+    a = analysis
+    end = duration if end is None else end
+    return {"file": Path(path).name,
+            "start": duration_label(start), "end": duration_label(end),
+            "bpm": bpm_label(a["bpm"], int(opts.get("bpm_decimals") or 0)) if a["bpm"] else "",
+            "key": key_label(a["tonic"], a["mode"], opts.get("key_format", "short"), opts.get("accidental", "sharp"))
+            if a["tonic"] is not None else "",
+            "energy": a["energy"] if a["energy"] is not None else "",
+            "mood": a["mood"] or "",
+            "duration": duration_label(end - start),
+            "bpm_conf": a["bpm_conf"], "key_conf": a["key_conf"], "error": ""}
 
 
-def strip_suffix(stem):
-    """Quita un sufijo __140bpm__Dm__03m05s previo para no apilarlo al reprocesar."""
-    return SUFFIX_RE.sub("", stem) or stem
+def analyze_file(path, opts):
+    """Filas del archivo: una, o varias (una por sección) si `split` no es off."""
+    info = probe(path)
+    duration = info["duration"]
+    mode = opts.get("split", "off")
+    if mode == "off":
+        return [analysis_row(path, analyze_audio(path, duration, opts), duration, opts)]
+    y = decode_mono(path)
+    total = duration or len(y) / ANALYSIS_SR
+    cuts = section_cuts(y, mode, float(opts.get("min_section") or 10.0), float(opts.get("split_seconds") or 15.0)) \
+        if len(y) >= ANALYSIS_SR else []
+    edges = [0.0] + [c for c in cuts if 0 < c < total] + [total]
+    rows = []
+    for a, b in zip(edges, edges[1:]):
+        seg = y[int(round(a * ANALYSIS_SR)):int(round(b * ANALYSIS_SR))]
+        rows.append(analysis_row(path, analyze_samples(seg, opts), total, opts, a, b))
+    return rows
 
 
-def build_name(stem, analysis, duration, opts):
-    decimals = int(opts.get("bpm_decimals") or 0)
-    key = key_label(analysis.get("tonic"), analysis.get("mode"), opts.get("key_format", "short"),
-                    opts.get("accidental", "sharp"))
-    return f"{strip_suffix(stem)}__{bpm_label(analysis.get('bpm'), decimals)}bpm__{key}__{duration_label(duration)}"
+def csv_text(rows):
+    """CSV (archivo, bpm, tonalidad, energia, mood, duracion). Las filas con error no se incluyen."""
+    import io
+    buf = io.StringIO(newline="")
+    w = csv.writer(buf, lineterminator="\r\n")
+    w.writerow(CSV_COLUMNS)
+    for r in rows:
+        if not r.get("error"):
+            w.writerow([r.get(k, "") for k in CSV_FIELDS])
+    return buf.getvalue()
+
+
+def write_csv(path, rows):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("w", encoding="utf-8-sig", newline="") as f:  # Excel lo abre bien; newline="" evita CRCRLF en Windows
+        f.write(csv_text(rows))
+    os.replace(tmp, path)
 
 
 # ───────────────────────── manifest y salidas ─────────────────────────
@@ -452,7 +587,7 @@ def load_manifest(out_dir):
             backup = path.with_name(f"{MANIFEST_NAME}.corrupto-{int(time.time())}")
             shutil.copy2(path, backup)
             print(f"! manifest.json ilegible, copia guardada en {backup.name}; se empieza de cero")
-    return {"version": 1, "tool": f"audio-processor {__version__}", "entries": {}}
+    return {"version": 2, "tool": f"audio-processor {__version__}", "entries": {}}
 
 
 def save_manifest(out_dir, manifest):
@@ -460,26 +595,8 @@ def save_manifest(out_dir, manifest):
     atomic_write_text(out_dir / MANIFEST_NAME, json.dumps(manifest, indent=2, ensure_ascii=False))
 
 
-def write_analysis_csv(out_dir, manifest):
-    rows = []
-    for e in manifest["entries"].values():
-        if e.get("status") != "ok":
-            continue
-        rows.append([e["source"], e["output"]["file"] if e.get("output") else "", e.get("bpm"), e.get("key"),
-                     e.get("key_name"), e.get("duration"), duration_label(e.get("duration") or 0), e.get("bpm_conf"), e.get("key_conf")])
-    if not rows:
-        return
-    rows.sort(key=lambda r: r[1])
-    tmp = out_dir / (CSV_NAME + ".tmp")
-    with tmp.open("w", newline="", encoding="utf-8-sig") as f:  # utf-8-sig: Excel lo abre bien
-        w = csv.writer(f)
-        w.writerow(["origen", "salida", "bpm", "tonalidad", "tonalidad_nombre", "duracion_s", "duracion", "confianza_bpm", "confianza_tonalidad"])
-        w.writerows(rows)
-    os.replace(tmp, out_dir / CSV_NAME)
-
-
-def collect_files(inputs, out_dir):
-    out_res = out_dir.resolve()
+def collect_files(inputs, out_dir=None):
+    out_res = out_dir.resolve() if out_dir else None
     found = []
     for inp in inputs:
         p = Path(inp)
@@ -491,7 +608,7 @@ def collect_files(inputs, out_dir):
         elif p.is_dir():
             for f in sorted(p.rglob("*")):
                 if (f.is_file() and f.suffix.lower() in AUDIO_EXTS and not f.name.startswith(".")
-                        and out_res not in f.resolve().parents):
+                        and (out_res is None or out_res not in f.resolve().parents)):
                     found.append((p, f, True))
         else:
             print(f"! No existe: {p}")
@@ -517,45 +634,66 @@ def unique_path(out_dir, folder, base, ext, key, manifest):
 
 
 def settings_from(args):
-    s = dict(RENAME_DEFAULTS)
+    """Ajustes de conversión (CLI o web), validados."""
+    s = dict(CONVERT_DEFAULTS)
+    for k in s:
+        v = getattr(args, k, None)
+        if v is not None:
+            s[k] = v
+    s["wav_bits"] = int(s["wav_bits"])
+    if s["format"] not in ("mp3", "wav"):
+        raise ValueError("--format debe ser mp3 o wav")
+    if s["mp3_quality"] not in MP3_QUALITIES:
+        raise ValueError(f"--mp3-quality debe ser una de: {', '.join(MP3_QUALITIES)}")
+    if s["wav_bits"] not in WAV_BITS:
+        raise ValueError("--wav-bits debe ser 16 o 24")
+    return s
+
+
+def analysis_settings_from(args):
+    """Ajustes del análisis (CLI o web), validados."""
+    s = dict(ANALYZE_DEFAULTS)
     for k in s:
         v = getattr(args, k, None)
         if v is not None:
             s[k] = v
     s["bpm_decimals"] = int(s["bpm_decimals"])
     s["bpm_min"], s["bpm_max"], s["analyze_seconds"] = float(s["bpm_min"]), float(s["bpm_max"]), float(s["analyze_seconds"])
-    if s["format"] not in ("original", "mp3"):
-        raise ValueError("--format debe ser original o mp3")
-    if s["mp3_quality"] not in MP3_QUALITIES:
-        raise ValueError(f"--mp3-quality debe ser una de: {', '.join(MP3_QUALITIES)}")
     if s["key_format"] not in ("short", "long", "camelot"):
         raise ValueError("--key-format debe ser short, long o camelot")
     if s["accidental"] not in ("sharp", "flat"):
         raise ValueError("--accidental debe ser sharp o flat")
+    if s["bpm_decimals"] not in (0, 1):
+        raise ValueError("--bpm-decimals debe ser 0 o 1")
+    s["min_section"], s["split_seconds"] = float(s["min_section"]), float(s["split_seconds"])
+    if s["split"] not in SPLIT_MODES:
+        raise ValueError("--split debe ser off, auto o fixed")
+    if s["min_section"] < 2 or s["split_seconds"] < 2:
+        raise ValueError("las secciones deben durar al menos 2 s")
+    if s["analyze_seconds"] < 0:
+        raise ValueError("--analyze-seconds no puede ser negativo")
     if not 20 <= s["bpm_min"] < s["bpm_max"] <= 400:
         raise ValueError("rango de BPM no válido (mín. 20, máx. 400, y mín < máx)")
     return s
 
 
-def convert_mp3(src, dst, info, settings, bpm_tag, key_tag, label):
+def convert_audio(src, dst, info, settings, label):
     cmd = [tool("ffmpeg"), "-hide_banner", "-nostdin", "-y", "-v", "error", "-progress", "pipe:1", "-nostats",
            "-i", str(src), "-map", "0:a:0"]
-    if info.get("cover_index") is not None:
-        cmd += ["-map", f"0:{info['cover_index']}", "-c:v", "copy"]
-    cmd += ["-map_metadata", "0", "-c:a", "libmp3lame"]
-    q = settings["mp3_quality"]
-    cmd += ["-q:a", q[1:]] if q.startswith("v") else ["-b:a", q]
-    if info.get("sample_rate", 0) > 48000:
-        cmd += ["-ar", "48000"]
-    if info.get("channels", 2) > 2:
-        cmd += ["-ac", "2"]
-    cmd += ["-id3v2_version", "3", "-write_id3v1", "1"]
-    if settings.get("write_tags"):
-        if bpm_tag:
-            cmd += ["-metadata", f"TBPM={bpm_tag}"]
-        if key_tag:
-            cmd += ["-metadata", f"TKEY={key_tag}"]
-    cmd += ["-f", "mp3", str(dst)]
+    if settings["format"] == "mp3":
+        if info.get("cover_index") is not None:
+            cmd += ["-map", f"0:{info['cover_index']}", "-c:v", "copy"]
+        cmd += ["-map_metadata", "0", "-c:a", "libmp3lame"]
+        q = settings["mp3_quality"]
+        cmd += ["-q:a", q[1:]] if q.startswith("v") else ["-b:a", q]
+        if info.get("sample_rate", 0) > 48000:
+            cmd += ["-ar", "48000"]
+        if info.get("channels", 2) > 2:
+            cmd += ["-ac", "2"]
+        cmd += ["-id3v2_version", "3", "-write_id3v1", "1", "-f", "mp3", str(dst)]
+    else:  # wav: sin carátula (el contenedor no la admite), con la frecuencia de muestreo original
+        cmd += ["-map_metadata", "0", "-c:a", "pcm_s24le" if settings["wav_bits"] == 24 else "pcm_s16le",
+                "-f", "wav", str(dst)]
     rc, err = run_ffmpeg(cmd, info["duration"], label)
     if rc != 0:
         raise RuntimeError("ffmpeg falló: " + clean_err(err, 500))
@@ -563,45 +701,27 @@ def convert_mp3(src, dst, info, settings, bpm_tag, key_tag, label):
 
 # ───────────────────────── proceso principal ─────────────────────────
 
-def process_file(src, rel, st, key, settings, out_dir, manifest, label, dry_run=False):
+def process_file(src, rel, key, settings, out_dir, manifest, label):
     info = probe(src)
-    duration = info["duration"]
-    show_progress(f"{label} analizando {src.stem}", 5, {})
-    analysis = analyze_audio(src, duration, settings)
-    base = build_name(src.stem, analysis, duration, settings)
-    ext = ".mp3" if settings["format"] == "mp3" else src.suffix.lower()
-    result = {"analysis": analysis, "duration": duration, "info": info, "base": base, "ext": ext}
-    if dry_run:
-        return result
     folder = out_dir / rel.parent
     folder.mkdir(parents=True, exist_ok=True)
-    final = unique_path(out_dir, folder, base, ext, key, manifest)
+    final = unique_path(out_dir, folder, src.stem, "." + settings["format"], key, manifest)
     tmp = final.with_name(final.name + ".part")
     try:
-        if settings["format"] == "mp3":
-            bpm_tag = bpm_label(analysis["bpm"], 0) if analysis["bpm"] else ""
-            key_tag = key_label(analysis["tonic"], analysis["mode"], "short", settings["accidental"]) \
-                if analysis["tonic"] is not None else ""
-            convert_mp3(src, tmp, info, settings, bpm_tag, key_tag, f"{label} {src.stem}")
-        else:
-            shutil.copyfile(src, tmp)
-            shutil.copystat(src, tmp)
+        convert_audio(src, tmp, info, settings, f"{label} {src.stem}")
         os.replace(tmp, final)
     finally:
         if tmp.exists():
             tmp.unlink()
-    result["final"] = final
-    return result
+    return {"duration": info["duration"], "final": final}
 
 
-def run_once(args):
+def convert_once(args):
     out_dir = Path(args.output)
     settings = settings_from(args)
-    if not has_numpy():
-        print("✗ Falta numpy para el análisis de BPM y tonalidad: pip install numpy", file=sys.stderr)
-        return 2
-    if settings["format"] == "mp3" and "libmp3lame" not in subprocess.run(
-            [tool("ffmpeg"), "-hide_banner", "-encoders"], capture_output=True, text=True, errors="replace").stdout:
+    if "libmp3lame" not in subprocess.run(
+            [tool("ffmpeg"), "-hide_banner", "-encoders"], capture_output=True, text=True, errors="replace").stdout \
+            and settings["format"] == "mp3":
         print("✗ Tu ffmpeg no trae el codificador libmp3lame (necesario para convertir a mp3).", file=sys.stderr)
         return 2
     files = collect_files(args.inputs, out_dir)
@@ -609,9 +729,8 @@ def run_once(args):
         print("No hay audio que procesar.")
         return 0
     multi_input = len(args.inputs) > 1
-    if not args.dry_run:
-        out_dir.mkdir(parents=True, exist_ok=True)
-    manifest = load_manifest(out_dir) if out_dir.exists() else {"version": 1, "entries": {}}
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manifest = load_manifest(out_dir)
 
     done = skipped = failed = waiting = 0
     t0 = time.time()
@@ -629,27 +748,19 @@ def run_once(args):
             print(f"{label} {src.name}: se modificó hace poco, lo dejo para la próxima pasada")
             continue
         entry = manifest["entries"].get(key)
-        if not args.force and not args.dry_run and entry_is_current(entry, st, settings, out_dir):
+        if not args.force and entry_is_current(entry, st, settings, out_dir):
             skipped += 1
             continue
         try:
-            res = process_file(src, rel, st, key, settings, out_dir, manifest, label, args.dry_run)
+            res = process_file(src, rel, key, settings, out_dir, manifest, label)
         except Exception as err:  # noqa: BLE001 - un fallo no debe parar el lote
             failed += 1
             print(f"{label} {src.name}: ✗ {err}")
-            if not args.dry_run:
-                manifest["entries"][key] = {
-                    "id": src.stem, "source": str(src), "size": st.st_size, "mtime": st.st_mtime,
-                    "settings": settings, "status": "failed", "error": str(err)[-500:],
-                    "processed_at": now_iso(), "output": None}
-                save_manifest(out_dir, manifest)
-            continue
-        a = res["analysis"]
-        keytxt = key_label(a["tonic"], a["mode"], "short", settings["accidental"])
-        summary = (f"{bpm_label(a['bpm'], 1)} bpm (conf. {a['bpm_conf']:.2f}) · {keytxt}"
-                   f"{'' if a['tonic'] is None else ' (' + a['mode'] + ')'} (conf. {a['key_conf']:.2f}) · {duration_label(res['duration'])}")
-        if args.dry_run:
-            print(f"{label} {src.name}: {summary}\n      → {res['base']}{res['ext']}")
+            manifest["entries"][key] = {
+                "id": src.stem, "source": str(src), "size": st.st_size, "mtime": st.st_mtime,
+                "settings": settings, "status": "failed", "error": str(err)[-500:],
+                "processed_at": now_iso(), "output": None}
+            save_manifest(out_dir, manifest)
             continue
         done += 1
         final = res["final"]
@@ -657,24 +768,52 @@ def run_once(args):
         old = (entry or {}).get("output")
         if old and old["file"] != rel_out and (out_dir / old["file"]).is_file():
             try:
-                (out_dir / old["file"]).unlink()  # salida vieja de este mismo origen (cambió el nombre)
+                (out_dir / old["file"]).unlink()  # salida vieja de este mismo origen (cambió el nombre o el formato)
             except OSError:
                 pass
         manifest["entries"][key] = {
             "id": src.stem, "source": str(src), "size": st.st_size, "mtime": st.st_mtime,
-            "duration": round(res["duration"], 3), "bpm": a["bpm"], "bpm_conf": a["bpm_conf"],
-            "key": None if a["tonic"] is None else f"{NOTES_SHARP[a['tonic']]} {a['mode']}",
-            "key_name": keytxt, "key_conf": a["key_conf"], "settings": settings, "status": "ok",
+            "duration": round(res["duration"], 3), "settings": settings, "status": "ok",
             "processed_at": now_iso(),
             "output": {"file": rel_out, "size": final.stat().st_size, "format": settings["format"]},
         }
         save_manifest(out_dir, manifest)
-        print(f"{label} {src.name}: ✓ {summary}\n      → {rel_out}")
+        print(f"{label} {src.name}: ✓ {duration_label(res['duration'])}\n      → {rel_out}")
 
-    if not args.dry_run and out_dir.exists():
-        write_analysis_csv(out_dir, manifest)
     show_progress("listo", 100, {})
-    print(f"\nListo en {time.time() - t0:.0f}s · procesados {done} · ya al día {skipped} · pendientes {waiting} · con error {failed}")
+    print(f"\nListo en {time.time() - t0:.0f}s · convertidos {done} · ya al día {skipped} · pendientes {waiting} · con error {failed}")
+    return 1 if failed else 0
+
+
+def analyze_cli(args):
+    opts = analysis_settings_from(args)
+    if not has_numpy():
+        print("✗ Falta numpy para el análisis: pip install numpy", file=sys.stderr)
+        return 2
+    files = collect_files(args.inputs)
+    if not files:
+        print("No hay audio que analizar.")
+        return 0
+    rows, failed, t0 = [], 0, time.time()
+    for n, (_, src, _) in enumerate(files, 1):
+        label = f"[{n}/{len(files)}]"
+        show_progress(f"{label} {src.stem}", int((n - 1) / len(files) * 100), {})
+        try:
+            file_rows = analyze_file(src, opts)
+        except Exception as err:  # noqa: BLE001
+            failed += 1
+            print(f"{label} {src.name}: ✗ {err}")
+            continue
+        rows.extend(file_rows)
+        for row in file_rows:
+            span = f" [{row['start']}–{row['end']}]" if len(file_rows) > 1 else ""
+            print(f"{label} {src.name}{span}: ✓ {row['bpm'] or '—'} bpm · {row['key'] or '—'} · energía {row['energy'] or '—'}"
+                  f" · {row['mood'] or '—'} · {row['duration']}")
+    if rows:
+        write_csv(args.output, rows)
+        print(f"\nCSV: {Path(args.output).resolve()}")
+    show_progress("listo", 100, {})
+    print(f"Listo en {time.time() - t0:.0f}s · analizados {len(rows)} · con error {failed}")
     return 1 if failed else 0
 
 
@@ -682,7 +821,7 @@ def cmd_watch(args):
     print(f"Vigilando {', '.join(args.inputs)} cada {args.interval}s (Ctrl+C para parar)")
     try:
         while True:
-            run_once(args)
+            convert_once(args)
             time.sleep(args.interval)
     except KeyboardInterrupt:
         print("\nParado.")
@@ -788,7 +927,7 @@ def cmd_doctor(args):
                              errors="replace").stdout
         line("libmp3lame" in enc, "codificador libmp3lame (convertir a mp3)")
         line(has_filter("showspectrumpic"), "filtro showspectrumpic (espectrograma)")
-    line(has_numpy(), "numpy (análisis de BPM y tonalidad): pip install numpy")
+    line(has_numpy(), "numpy (herramienta Analizar): pip install numpy")
     return 0 if ok else 1
 
 
@@ -908,7 +1047,7 @@ def browse_dir(path):
     return {"path": str(p), "parent": str(p.parent) if p.parent != p else None, "dirs": dirs, "files": files}
 
 
-def expand_inputs(inputs, limit=500):
+def expand_inputs(inputs, limit=5000):
     """Lista plana de archivos de audio a partir de archivos y carpetas (recursivo), sin imprimir nada."""
     found = []
     for inp in inputs:
@@ -919,8 +1058,8 @@ def expand_inputs(inputs, limit=500):
             found += [str(f) for f in sorted(p.rglob("*"))
                       if f.is_file() and f.suffix.lower() in AUDIO_EXTS and not f.name.startswith(".")]
     if len(found) > limit:
-        raise ValueError(f"demasiados archivos ({len(found)}); el máximo para espectrogramas desde la web es {limit}")
-    return found
+        raise ValueError(f"demasiados archivos ({len(found)}); el máximo desde la web es {limit}")
+    return list(dict.fromkeys(found))  # sin repetidos, en orden
 
 
 def read_results(out):
@@ -929,17 +1068,15 @@ def read_results(out):
     items = []
     for e in manifest["entries"].values():
         items.append({"id": e.get("id"), "status": e.get("status"), "source": e.get("source"),
-                      "duration": e.get("duration"), "src_size": e.get("size"), "bpm": e.get("bpm"),
-                      "bpm_conf": e.get("bpm_conf"), "key": e.get("key"), "key_name": e.get("key_name"),
-                      "key_conf": e.get("key_conf"), "output": e.get("output"), "error": e.get("error"),
-                      "processed_at": e.get("processed_at")})
+                      "duration": e.get("duration"), "src_size": e.get("size"), "output": e.get("output"),
+                      "error": e.get("error"), "processed_at": e.get("processed_at")})
     items.sort(key=lambda i: i.get("processed_at") or "", reverse=True)
-    return {"items": items, "csv": (d / CSV_NAME).is_file(), "dir": str(d.resolve())}
+    return {"items": items, "dir": str(d.resolve())}
 
 
 def build_cli_args(body):
-    """Del formulario de la web a los argumentos de `run`/`watch` (nada pasa por una shell)."""
-    mode = {"run": "run", "dry": "run", "watch": "watch"}.get(body.get("mode"))
+    """Del formulario de la web a los argumentos de `convert`/`watch` (nada pasa por una shell)."""
+    mode = {"convert": "convert", "watch": "watch"}.get(body.get("mode"))
     inputs = [str(x) for x in body.get("inputs") or [] if str(x).strip()]
     output = str(body.get("output") or "").strip()
     if not mode:
@@ -949,26 +1086,26 @@ def build_cli_args(body):
     if not output:
         raise ValueError("elige la carpeta de salida")
     argv = [mode, *inputs, "-o", output]
-    for key, flag in (("format", "--format"), ("mp3_quality", "--mp3-quality"), ("key_format", "--key-format"),
-                      ("accidental", "--accidental")):
+    for key, flag in (("format", "--format"), ("mp3_quality", "--mp3-quality"), ("wav_bits", "--wav-bits")):
         v = body.get(key)
         if v not in (None, ""):
             argv += [flag, str(v)]
-    for key, flag in (("bpm_min", "--bpm-min"), ("bpm_max", "--bpm-max"), ("bpm_decimals", "--bpm-decimals"),
-                      ("analyze_seconds", "--analyze-seconds"), ("settle", "--settle"), ("interval", "--interval")):
+    for key, flag in (("settle", "--settle"), ("interval", "--interval")):
         v = body.get(key)
         if v in (None, "") or (key == "interval" and mode != "watch"):
             continue
         float(v)  # valida que sea un número
         argv += [flag, str(v)]
-    if body.get("write_tags") is False:
-        argv.append("--no-tags")
     if body.get("force"):
         argv.append("--force")
-    if body.get("mode") == "dry":
-        argv.append("--dry-run")
-    settings_from(parse_run_args(argv))  # valida valores (formato, calidad, rango de BPM…) antes de lanzar
+    settings_from(parse_run_args(argv))  # valida valores (formato, calidad…) antes de lanzar
     return mode, argv, output
+
+
+def analysis_options(raw):
+    """Opciones de análisis que llegan de la web, validadas con las mismas reglas que la CLI."""
+    ns = argparse.Namespace(**{k: v for k, v in (raw or {}).items() if k in ANALYZE_DEFAULTS and v not in (None, "")})
+    return analysis_settings_from(ns)
 
 
 def open_in_file_manager(path):
@@ -1073,8 +1210,8 @@ def make_handler(job, specs, token, port):
             try:
                 if url.path == "/api/state":
                     self.send_json({"version": __version__, "doctor": doctor_info(), "roots": list_roots(),
-                                    "rename_defaults": RENAME_DEFAULTS, "spec_defaults": SPEC_DEFAULTS,
-                                    "mp3_qualities": MP3_QUALITIES,
+                                    "convert_defaults": CONVERT_DEFAULTS, "analyze_defaults": ANALYZE_DEFAULTS,
+                                    "spec_defaults": SPEC_DEFAULTS, "mp3_qualities": MP3_QUALITIES, "wav_bits": WAV_BITS,
                                     "spec_choices": {"color": SPEC_COLORS, "scale": SPEC_SCALES, "fscale": SPEC_FSCALES,
                                                      "win": SPEC_WINS, "mode": SPEC_MODES}})
                 elif url.path == "/api/browse":
@@ -1108,6 +1245,25 @@ def make_handler(job, specs, token, port):
                     self.send_json({"ok": True})
                 elif path == "/api/expand":
                     self.send_json({"files": expand_inputs([str(x) for x in body.get("inputs") or []])})
+                elif path == "/api/analyze":
+                    src = Path(str(body.get("file") or ""))
+                    if not src.is_file() or src.suffix.lower() not in AUDIO_EXTS:
+                        raise ValueError(f"no es un archivo de audio: {src}")
+                    if not has_numpy():
+                        raise ValueError("falta numpy para el análisis: pip install numpy")
+                    try:
+                        self.send_json({"ok": True, "rows": analyze_file(src, analysis_options(body.get("options")))})
+                    except RuntimeError as err:  # archivo ilegible: se devuelve como fila con error, no rompe el lote
+                        self.send_json({"ok": True, "rows": [{"file": src.name, "error": str(err)}]})
+                elif path == "/api/analyze/csv":
+                    self.send_bytes(b"\xef\xbb\xbf" + csv_text(body.get("rows") or []).encode("utf-8"), "text/csv; charset=utf-8")
+                elif path == "/api/analyze/save":
+                    out = str(body.get("output") or "").strip()
+                    if not out:
+                        raise ValueError("elige la carpeta de salida")
+                    dst = Path(out) / CSV_NAME
+                    write_csv(dst, body.get("rows") or [])
+                    self.send_json({"ok": True, "path": str(dst)})
                 elif path == "/api/spectrogram":
                     sid, name = specs.generate(body.get("file", ""), body.get("options"))
                     self.send_json({"ok": True, "id": sid, "name": name})
@@ -1168,35 +1324,41 @@ def add_inputs(p):
     p.add_argument("--force", action="store_true", help="rehacer aunque ya esté al día")
 
 
-def add_rename(p):
+def add_convert(p):
     add_inputs(p)
-    d = RENAME_DEFAULTS
-    p.add_argument("--format", choices=["original", "mp3"], help="formato de salida (por defecto: original)")
+    p.add_argument("--format", choices=["mp3", "wav"], help="formato de salida (por defecto: mp3)")
     p.add_argument("--mp3-quality", dest="mp3_quality", choices=MP3_QUALITIES, help="calidad mp3 (por defecto 320k)")
-    p.add_argument("--key-format", dest="key_format", choices=["short", "long", "camelot"],
-                   help="Dm / Dmin / 7A (por defecto short)")
-    p.add_argument("--accidental", choices=["sharp", "flat"], help="F# o Gb (por defecto sharp)")
-    p.add_argument("--bpm-min", dest="bpm_min", type=float, help=f"BPM mínimo a considerar (por defecto {d['bpm_min']:g})")
-    p.add_argument("--bpm-max", dest="bpm_max", type=float, help=f"BPM máximo a considerar (por defecto {d['bpm_max']:g})")
-    p.add_argument("--bpm-decimals", dest="bpm_decimals", type=int, choices=[0, 1], help="decimales del BPM en el nombre")
-    p.add_argument("--analyze-seconds", dest="analyze_seconds", type=float,
-                   help="analizar solo esta ventana central, en segundos (por defecto 120; 0 = pista completa)")
-    p.add_argument("--no-tags", dest="write_tags", action="store_false", default=None,
-                   help="al convertir a mp3, no escribir BPM y tonalidad en las etiquetas")
-    p.add_argument("--dry-run", action="store_true", help="solo analizar y mostrar los nombres, sin escribir nada")
+    p.add_argument("--wav-bits", dest="wav_bits", type=int, choices=WAV_BITS, help="profundidad del wav (por defecto 16)")
     p.add_argument("--settle", type=float, default=0,
                    help="saltar archivos modificados hace menos de N segundos (por si aún se copian)")
 
 
 def build_parser():
     ap = argparse.ArgumentParser(prog="audio_processor",
-                                 description="Analiza BPM, tonalidad y duración del audio, lo renombra y genera espectrogramas.")
+                                 description="Convierte audio a mp3/wav, lo analiza a un CSV (BPM, tonalidad, energía, mood, duración) y genera espectrogramas.")
     ap.add_argument("--version", action="version", version=f"audio-processor {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    add_rename(sub.add_parser("run", help="analiza y renombra una vez (ideal para un schedule)"))
-    watch = sub.add_parser("watch", help="vigila la carpeta y procesa lo nuevo cada cierto tiempo")
-    add_rename(watch)
+    add_convert(sub.add_parser("convert", help="convierte a mp3 o wav una vez (ideal para un schedule)"))
+    watch = sub.add_parser("watch", help="vigila la carpeta y convierte lo nuevo cada cierto tiempo")
+    add_convert(watch)
     watch.add_argument("--interval", type=float, default=300, help="segundos entre pasadas (por defecto 300)")
+    ana = sub.add_parser("analyze", help="analiza BPM, tonalidad, energía, mood y duración y los guarda en un CSV")
+    ana.add_argument("inputs", nargs="+", help="archivos y/o carpetas (se recorren con subcarpetas)")
+    ana.add_argument("-o", "--output", default=CSV_NAME, help=f"archivo CSV de salida (por defecto {CSV_NAME})")
+    d = ANALYZE_DEFAULTS
+    ana.add_argument("--key-format", dest="key_format", choices=["short", "long", "camelot"], help="Dm / Dmin / 7A (por defecto short)")
+    ana.add_argument("--accidental", choices=["sharp", "flat"], help="F# o Gb (por defecto sharp)")
+    ana.add_argument("--bpm-min", dest="bpm_min", type=float, help=f"BPM mínimo a considerar (por defecto {d['bpm_min']:g})")
+    ana.add_argument("--bpm-max", dest="bpm_max", type=float, help=f"BPM máximo a considerar (por defecto {d['bpm_max']:g})")
+    ana.add_argument("--bpm-decimals", dest="bpm_decimals", type=int, choices=[0, 1], help="decimales del BPM")
+    ana.add_argument("--analyze-seconds", dest="analyze_seconds", type=float,
+                     help="analizar solo esta ventana central, en segundos (por defecto 120; 0 = pista completa)")
+    ana.add_argument("--split", choices=list(SPLIT_MODES),
+                     help="fragmentar cada pista en secciones: auto (por cambios), fixed (ventanas iguales) u off (por defecto)")
+    ana.add_argument("--min-section", dest="min_section", type=float,
+                     help=f"duración mínima de una sección con --split auto (por defecto {d['min_section']:g} s)")
+    ana.add_argument("--split-seconds", dest="split_seconds", type=float,
+                     help=f"tamaño de cada sección con --split fixed (por defecto {d['split_seconds']:g} s)")
     spec = sub.add_parser("spectrogram", help="genera espectrogramas PNG")
     add_inputs(spec)
     d = SPEC_DEFAULTS
@@ -1232,12 +1394,14 @@ def main(argv=None):
         except Exception:  # noqa: BLE001
             pass
     args = build_parser().parse_args(argv)
-    if args.cmd in ("run", "watch", "spectrogram") and not (tool("ffmpeg") and tool("ffprobe")):
+    if args.cmd in ("convert", "watch", "spectrogram", "analyze") and not (tool("ffmpeg") and tool("ffprobe")):
         print("✗ No encuentro ffmpeg/ffprobe. Ejecuta `doctor` para más detalles.", file=sys.stderr)
         return 2
     try:
-        if args.cmd == "run":
-            return run_once(args)
+        if args.cmd == "convert":
+            return convert_once(args)
+        if args.cmd == "analyze":
+            return analyze_cli(args)
         if args.cmd == "watch":
             if args.settle == 0:
                 args.settle = 30

@@ -1,24 +1,32 @@
-# Audio Processor v0.1.0
+# Audio Processor v0.2.0
 
 🌐 English | [Versión en español](README-ES.md) | 📝 [Changelog](CHANGELOG.md)
 
-Reads the **BPM, key and duration** of your audio and renames it, and draws **spectrograms**. A single Python script with a local web interface, built like its siblings [Image Processor](https://github.com/meteorik-media/Image-Processor) and [Video Processor](https://github.com/meteorik-media/Video-Processor): same look, named settings, recursive folder mode, failures are skipped and counted, and your originals are never touched.
+**Converts** audio to MP3 or WAV, **analyzes** it into a CSV (BPM, key, energy, mood, duration) and draws **spectrograms**. A single Python script with a local web interface, built like its siblings [Image Processor](https://github.com/meteorik-media/Image-Processor) and [Video Processor](https://github.com/meteorik-media/Video-Processor): same look, named settings, recursive folder mode, failures are skipped and counted, and your originals are never touched.
 
 ```
-my_sample.wav   →   my_sample__140bpm__Dm__03m05s.wav     (original format, a renamed copy)
-my_sample.wav   →   my_sample__140bpm__Dm__03m05s.mp3     (converted to mp3)
+archivo     bpm   tonalidad   energia   mood      inicio      fin         duracion
+loop.wav    140   Dm          7         Dark      00:00:000   00:14:203   00:14:203
+pad.flac    128   C           3         Chill     00:00:000   03:05:120   03:05:120
 ```
 
 ## 🧰 What it does
 
-### Rename & analyze
-- **Detects BPM, key (major/minor) and duration** and builds `original_name__140bpm__Dm__03m05s.ext`.
-- **Output in the original format** (a byte-for-byte copy under the new name, no re-encoding) **or converted to MP3** (320k, 256k, 192k, 128k, V0 or V2). Converting keeps cover art and tags and can write the BPM and key into the ID3 tags (`TBPM`, `TKEY`).
-- **Key notation**: `Dm` (default), `Dmin` or Camelot `7A`; sharps (`F#`) or flats (`Gb`). BPM with 0 or 1 decimals.
-- **Preview** (`--dry-run`, "Preview" button) analyzes and shows the new names without writing anything.
-- **Results** with a confidence value for BPM and key, and `analysis.csv` (opens in Excel). Low confidence is highlighted so you know what to double-check.
-- Folder mode mirrors subfolders; reprocessing never stacks suffixes (`name__140bpm__Dm__03m05s` is cleaned before renaming again); name clashes get ` (2)`.
-- **Idempotent**: what's already processed is skipped (same file, size, date and settings). Outputs are written to a temp file and renamed when done.
+### Convert
+- **To MP3** (320k, 256k, 192k, 128k, V0 or V2, keeping cover art and tags) **or to WAV** (16 or 24 bit, lossless).
+- **Keeps the original name**: only the extension changes (`loop.flac` → `loop.wav`). Folder mode mirrors subfolders; name clashes get ` (2)`.
+- **Idempotent**: what's already converted is skipped (same file, size, date and settings). Outputs are written to a temp file and renamed when done. Changing the format replaces the previous output of that same file.
+- Can watch a folder (`watch`) and convert whatever shows up.
+
+### Analyze → CSV
+- Columns: `archivo, bpm, tonalidad, energia, mood, inicio, fin, duracion`.
+- **BPM** and **key** (`Dm`, `Dmin` or Camelot `7A`; sharps or flats; BPM with 0 or 1 decimals).
+- **Energy 1–10** from loudness, hit density, brightness and tempo.
+- **Mood** in English: Melancholic, Dark, Aggressive, Chill, Happy, Uplifting, Euphoric, Energetic or Neutral, from the major/minor mode and the energy.
+- **Start / end / duration** as `mm:ss:ms` (`03:05:123`). A whole track is `00:00:000` to its duration.
+- **Split into sections** (off by default): energy and mood change over a track, so with `--split auto` each section gets its own row (same file name, own start/end/duration). Auto cuts where loudness, brightness or hit density change, with sections of at least `--min-section` seconds (10). `--split fixed` uses equal chunks of about `--split-seconds` (15). The whole track is analyzed when splitting (the window is ignored).
+- The results fill a table on screen as each file finishes; then **Download CSV** or **Save to output** (`analysis.csv`). The CSV opens in Excel. Low BPM/key confidence is highlighted.
+- Bulk-friendly: in the file browser use **Select all** (or Ctrl+A), Shift+click for a range, or add a whole folder (subfolders included).
 
 ### Spectrogram
 - PNG spectrograms with axes and dB legend, for one or many files, shown in a gallery (click to zoom) and saved to `<output>/spectrograms/`.
@@ -34,30 +42,33 @@ my_sample.wav   →   my_sample__140bpm__Dm__03m05s.mp3     (converted to mp3)
 ```
 python audio_processor.py serve                         # web interface (--port N, --no-open)
 python audio_processor.py doctor
-python audio_processor.py run SAMPLES/ -o OUT/                      # original format
-python audio_processor.py run SAMPLES/ -o OUT/ --format mp3 --key-format camelot
-python audio_processor.py run SAMPLES/ -o OUT/ --dry-run            # preview names only
+python audio_processor.py convert SAMPLES/ -o OUT/                  # to mp3 (default)
+python audio_processor.py convert SAMPLES/ -o OUT/ --format wav --wav-bits 24
 python audio_processor.py watch SAMPLES/ -o OUT/ --interval 300
+python audio_processor.py analyze SAMPLES/ -o analysis.csv --key-format camelot
+python audio_processor.py analyze SAMPLES/ -o analysis.csv --split auto      # one row per section
 python audio_processor.py spectrogram song.wav -o PNGS/ --color magma --fscale log --from 1:00 --to 1:30
 ```
 
-`OUT/` also gets `manifest.json` (everything processed) and `analysis.csv`.
+`convert` also leaves a `manifest.json` in `OUT/` (everything processed).
 
 ## 📋 Requirements
 
 - Python 3.8 or later
 - `ffmpeg` and `ffprobe` on the PATH (with `libmp3lame` for MP3 and the `showspectrumpic` filter; `doctor` checks them)
-- `numpy` for BPM/key analysis: `pip install numpy`
+- `numpy` for the Analyze tool: `pip install numpy`
 
 ## ⚠️ Known limits
 
-BPM and key are **estimates** made with a lightweight algorithm (numpy only, no AI models). They are good on samples, loops and tracks with a steady beat, and sometimes wrong:
+BPM, key, energy and mood are **estimates** made with a lightweight algorithm (numpy only, no AI models). They are good on samples, loops and tracks with a steady beat, and sometimes wrong:
 
+- **Energy and mood are heuristics**, not a trained model: energy blends loudness, hit density, brightness and tempo; mood comes from major/minor mode plus energy (when the key is doubtful it falls back to Chill / Neutral / Energetic). Use them as a guide.
 - **Double / half tempo** (e.g. 180 instead of 90) is a genuine ambiguity. Narrow the range in *Analysis* (max BPM 150 forces 90). The default prefers 70–190 with a bias toward ~128.
 - **Relative major/minor** (Dm vs F) can't be told apart when the music uses the same notes. The key confidence is shown so you can spot the shaky ones.
-- Tracks with tempo changes, free tempo, or long silences give unreliable BPM. Very short clips (a few seconds) are approximate.
-- Only the middle 120 s of each file is analyzed by default (faster); use *Window* = 0 for the whole track.
-- Tested with synthetic audio; the first real-music batch is still to be tried, so use *Preview* first.
+- Tracks with tempo changes, free tempo, or long silences give unreliable BPM. Very short clips (a few seconds) are approximate. Silent files get empty cells.
+- Only the middle 120 s of each file is analyzed by default (faster); use *Window* = 0 for the whole track. Energy is measured on that same window.
+- Tested with synthetic audio; the first real-music batch is still to be tried.
+- WAV output carries no cover art (the container doesn't support it).
 - Console output is in Spanish only for now (the web interface is bilingual).
 - The web interface is for one person on one machine: it has no login and only listens on `127.0.0.1`. Don't expose it to a network.
 
@@ -67,4 +78,4 @@ BPM and key are **estimates** made with a lightweight algorithm (numpy only, no 
 python -m unittest -v
 ```
 
-They generate synthetic audio and skip themselves if ffmpeg or numpy aren't available. They cover naming, analysis, mp3 tags, idempotency, collisions, broken files, spectrograms and the web server (token and host checks, a full job through the API).
+They generate synthetic audio and skip themselves if ffmpeg or numpy aren't available. They cover conversion, analysis, energy/mood, the CSV, idempotency, collisions, broken files, spectrograms and the web server (token and host checks, a full job through the API).
