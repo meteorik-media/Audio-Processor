@@ -85,13 +85,17 @@ class PureFunctions(unittest.TestCase):
         self.assertEqual(sorted(ap.CAMELOT_MAJOR.values()), list(range(1, 13)))
         self.assertEqual(sorted(ap.CAMELOT_MINOR.values()), list(range(1, 13)))
 
-    def test_duration_label_is_mm_ss_ms(self):
-        self.assertEqual(ap.duration_label(185.123), "03:05:123")
-        self.assertEqual(ap.duration_label(0), "00:00:000")
-        self.assertEqual(ap.duration_label(59.9996), "01:00:000")
-        self.assertEqual(ap.duration_label(0.5), "00:00:500")
-        self.assertEqual(ap.duration_label(125 * 60 + 3.007), "125:03:007")
-        self.assertEqual(ap.duration_label(-3), "00:00:000")
+    def test_duration_label_is_mm_ss(self):
+        self.assertEqual(ap.duration_label(185.123), "03:05")
+        self.assertEqual(ap.duration_label(0), "00:00")
+        self.assertEqual(ap.duration_label(59.6), "01:00")
+        self.assertEqual(ap.duration_label(0.4), "00:00")
+        self.assertEqual(ap.duration_label(125 * 60 + 3.007), "125:03")
+        self.assertEqual(ap.duration_label(-3), "00:00")
+
+    def test_song_id_is_spreadsheet_style(self):
+        self.assertEqual([ap.song_id(i) for i in (0, 1, 25, 26, 27, 51, 52, 701, 702)],
+                         ["a", "b", "z", "aa", "ab", "az", "ba", "zz", "aaa"])
 
     def test_bpm_label(self):
         self.assertEqual(ap.bpm_label(139.6), "140")
@@ -112,15 +116,15 @@ class PureFunctions(unittest.TestCase):
         self.assertIsNone(ap.mood_label("minor", 0.9, None))
 
     def test_csv_columns_and_skips_errors(self):
-        rows = [{"file": "a, b.wav", "bpm": "140", "key": "Dm", "energy": 7, "mood": "Dark",
-                 "start": "00:00:000", "end": "00:14:203", "duration": "00:14:203"},
+        rows = [{"song_id": "a", "segment": 1, "file": "a, b.wav", "bpm": "140", "key": "Dm", "energy": 7, "mood": "Dark",
+                 "start": "00:00", "end": "00:14", "duration": "00:14"},
                 {"file": "mal.wav", "error": "ffprobe no pudo leer el archivo"},
-                {"file": "mudo.wav", "bpm": "", "key": "", "energy": "", "mood": "",
-                 "start": "00:00:000", "end": "00:05:000", "duration": "00:05:000"}]
+                {"song_id": "b", "segment": 1, "file": "mudo.wav", "bpm": "", "key": "", "energy": "", "mood": "",
+                 "start": "00:00", "end": "00:05", "duration": "00:05"}]
         lines = ap.csv_text(rows).splitlines()
-        self.assertEqual(lines[0], "archivo,bpm,tonalidad,energia,mood,inicio,fin,duracion")
-        self.assertEqual(lines[1], '"a, b.wav",140,Dm,7,Dark,00:00:000,00:14:203,00:14:203')
-        self.assertEqual(lines[2], "mudo.wav,,,,,00:00:000,00:05:000,00:05:000")
+        self.assertEqual(lines[0], "song_id,segment,archivo,bpm,tonalidad,energia,mood,inicio,fin,duracion")
+        self.assertEqual(lines[1], 'a,1,"a, b.wav",140,Dm,7,Dark,00:00,00:14,00:14')
+        self.assertEqual(lines[2], "b,1,mudo.wav,,,,,00:00,00:05,00:05")
         self.assertEqual(len(lines), 3)
 
     def test_parse_time(self):
@@ -206,7 +210,7 @@ class Analysis(unittest.TestCase):
         self.assertIsNone(res["energy"])
         self.assertIsNone(res["mood"])
         row = ap.analysis_row(silent, res, 5.0, dict(ap.ANALYZE_DEFAULTS))
-        self.assertEqual((row["bpm"], row["key"], row["energy"], row["mood"], row["duration"]), ("", "", "", "", "00:05:000"))
+        self.assertEqual((row["bpm"], row["key"], row["energy"], row["mood"], row["duration"]), ("", "", "", "", "00:05"))
         tiny = self.tmp / "tiny.wav"
         write_wav(tiny, b"\x10\x10" * 2000)
         res = ap.analyze_audio(tiny, 0.05, dict(ap.ANALYZE_DEFAULTS))
@@ -227,16 +231,18 @@ class Analysis(unittest.TestCase):
         rows = ap.analyze_file(path, dict(ap.ANALYZE_DEFAULTS))
         self.assertEqual(len(rows), 1)
         self.assertEqual((rows[0]["start"], rows[0]["end"], rows[0]["duration"]),
-                         ("00:00:000", "00:40:000", "00:40:000"))
+                         ("00:00", "00:40", "00:40"))
+        self.assertEqual((rows[0]["song_id"], rows[0]["segment"]), ("a", 1))
 
     def test_split_auto_cuts_where_the_music_changes(self):
         path = self.two_part_track()
         opts = dict(ap.ANALYZE_DEFAULTS, split="auto")
-        rows = ap.analyze_file(path, opts)
+        rows = ap.analyze_file(path, opts, 2)
         self.assertEqual(len(rows), 2, rows)
-        self.assertEqual(rows[0]["start"], "00:00:000")
+        self.assertEqual(rows[0]["start"], "00:00")
         self.assertEqual(rows[0]["end"], rows[1]["start"])
-        self.assertEqual(rows[1]["end"], "00:40:000")
+        self.assertEqual(rows[1]["end"], "00:40")
+        self.assertEqual([(r["song_id"], r["segment"]) for r in rows], [("c", 1), ("c", 2)])
         cut = int(rows[0]["end"].split(":")[0]) * 60 + int(rows[0]["end"].split(":")[1])
         self.assertAlmostEqual(cut, 20, delta=2)
         self.assertLess(rows[0]["energy"], rows[1]["energy"], "la parte suave es menos enérgica")
@@ -252,11 +258,12 @@ class Analysis(unittest.TestCase):
     def test_split_fixed_makes_equal_contiguous_sections(self):
         rows = ap.analyze_file(self.two_part_track(), dict(ap.ANALYZE_DEFAULTS, split="fixed", split_seconds=15))
         self.assertEqual(len(rows), 3)  # 40 s / 15 s -> 3 trozos de ~13,3 s
-        self.assertEqual(rows[0]["start"], "00:00:000")
-        self.assertEqual(rows[-1]["end"], "00:40:000")
+        self.assertEqual(rows[0]["start"], "00:00")
+        self.assertEqual(rows[-1]["end"], "00:40")
+        self.assertEqual([r["segment"] for r in rows], [1, 2, 3])
         for a, b in zip(rows, rows[1:]):
             self.assertEqual(a["end"], b["start"])
-        self.assertEqual(rows[0]["duration"], "00:13:333")
+        self.assertEqual(rows[0]["duration"], "00:13")
 
 
 @unittest.skipUnless(HAVE_FFMPEG and np is not None, "necesita ffmpeg y numpy")
@@ -335,14 +342,15 @@ class EndToEnd(unittest.TestCase):
         raw = csv_path.read_bytes()
         self.assertTrue(raw.startswith(b"\xef\xbb\xbf"), "BOM para que Excel lo abra bien")
         rows = [line.split(",") for line in raw.decode("utf-8-sig").splitlines()]
-        self.assertEqual(rows[0], ["archivo", "bpm", "tonalidad", "energia", "mood", "inicio", "fin", "duracion"])
-        by_bpm = sorted(rows[1:], key=lambda x: x[1])
-        self.assertEqual([x[1:3] for x in by_bpm], [["128", "C"], ["140", "Dm"]])
+        self.assertEqual(rows[0], ["song_id", "segment", "archivo", "bpm", "tonalidad", "energia", "mood", "inicio", "fin", "duracion"])
+        by_bpm = sorted(rows[1:], key=lambda x: x[3])
+        self.assertEqual([x[3:5] for x in by_bpm], [["128", "C"], ["140", "Dm"]])
+        self.assertEqual(sorted((x[0], x[1]) for x in rows[1:]), [("a", "1"), ("b", "1")])
         for row in rows[1:]:
-            self.assertTrue(1 <= int(row[3]) <= 10)
-            self.assertEqual(row[5], "00:00:000")
-            self.assertEqual(row[6], row[7], "pista completa: fin == duración")
-            self.assertRegex(row[7], r"^\d{2,}:\d{2}:\d{3}$")
+            self.assertTrue(1 <= int(row[5]) <= 10)
+            self.assertEqual(row[7], "00:00")
+            self.assertEqual(row[8], row[9], "pista completa: fin == duración")
+            self.assertRegex(row[9], r"^\d{2,}:\d{2}$")
         self.assertNotIn(b"\r\r", raw)
         self.assertFalse(list(self.tmp.glob("res/*.tmp")))
 
@@ -448,7 +456,7 @@ class WebServer(unittest.TestCase):
         code, csv_bytes = self.req("/api/analyze/csv", {"rows": [row, err]}, raw=True)
         self.assertEqual(code, 200)
         lines = csv_bytes.decode("utf-8-sig").splitlines()
-        self.assertEqual(lines[0], "archivo,bpm,tonalidad,energia,mood,inicio,fin,duracion")
+        self.assertEqual(lines[0], "song_id,segment,archivo,bpm,tonalidad,energia,mood,inicio,fin,duracion")
         self.assertEqual(len(lines), 2, "la fila con error no va al CSV")
         saved = self.req("/api/analyze/save", {"rows": [row], "output": str(self.tmp / "csvout")})[1]
         self.assertTrue(Path(saved["path"]).is_file())

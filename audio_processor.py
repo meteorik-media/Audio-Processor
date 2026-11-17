@@ -3,8 +3,8 @@
 """Audio Processor — convierte audio a mp3/wav, lo analiza a un CSV (BPM, tonalidad, energía, mood,
 duración) y genera espectrogramas.
 
-    archivo   bpm  tonalidad  energia  mood  duracion
-    loop.wav  140  Dm         7        Dark  00:14:203
+    song_id  segment  archivo   bpm  tonalidad  energia  mood  inicio  fin    duracion
+    a        1        loop.wav  140  Dm         7        Dark  00:00   00:14  00:14
 
 Los originales nunca se modifican. Necesita ffmpeg/ffprobe en el PATH; el análisis además usa numpy.
 Convertir es idempotente: lo ya procesado se salta.
@@ -62,8 +62,8 @@ ANALYZE_DEFAULTS = {
 SPLIT_MODES = ("off", "auto", "fixed")
 MP3_QUALITIES = ("320k", "256k", "192k", "128k", "v0", "v2")
 WAV_BITS = (16, 24)
-CSV_COLUMNS = ("archivo", "bpm", "tonalidad", "energia", "mood", "inicio", "fin", "duracion")
-CSV_FIELDS = ("file", "bpm", "key", "energy", "mood", "start", "end", "duration")  # claves de cada fila, en el mismo orden
+CSV_COLUMNS = ("song_id", "segment", "archivo", "bpm", "tonalidad", "energia", "mood", "inicio", "fin", "duracion")
+CSV_FIELDS = ("song_id", "segment", "file", "bpm", "key", "energy", "mood", "start", "end", "duration")  # claves de cada fila, en el mismo orden
 SPEC_DEFAULTS = {
     "width": 1920, "height": 1080,
     "color": "magma", "scale": "log", "fscale": "lin", "win": "hann",
@@ -131,9 +131,19 @@ def fmt_hms(seconds):
 
 
 def duration_label(seconds):
-    """mm:ss:ms (ms con 3 dígitos); los minutos pueden pasar de 99. 185.123 -> '03:05:123'."""
-    total_ms = int(round(max(0.0, seconds) * 1000))
-    return f"{total_ms // 60000:02d}:{total_ms // 1000 % 60:02d}:{total_ms % 1000:03d}"
+    """mm:ss a segundos enteros; los minutos pueden pasar de 99. 185.4 -> '03:05'."""
+    total = int(max(0.0, seconds) + 0.5)
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+
+def song_id(index):
+    """Letras como en las columnas de una hoja de cálculo: 0 -> a, 25 -> z, 26 -> aa, 27 -> ab."""
+    index += 1
+    out = ""
+    while index > 0:
+        index, r = divmod(index - 1, 26)
+        out = chr(97 + r) + out
+    return out
 
 
 def fmt_size(n):
@@ -519,37 +529,41 @@ def bpm_label(bpm, decimals=0):
     return f"{bpm:.1f}".rstrip("0").rstrip(".") if decimals else str(int(round(bpm)))
 
 
-def analysis_row(path, analysis, duration, opts, start=0.0, end=None):
+def round_s(seconds):
+    return int(max(0.0, seconds) + 0.5)
+
+
+def analysis_row(path, analysis, duration, opts, start=0.0, end=None, index=0, segment=1):
     """Una fila del CSV/tabla (pista completa o una sección start–end). Lo que no se pudo estimar queda vacío."""
     a = analysis
     end = duration if end is None else end
-    return {"file": Path(path).name,
+    return {"song_id": song_id(index), "segment": segment, "file": Path(path).name,
             "start": duration_label(start), "end": duration_label(end),
             "bpm": bpm_label(a["bpm"], int(opts.get("bpm_decimals") or 0)) if a["bpm"] else "",
             "key": key_label(a["tonic"], a["mode"], opts.get("key_format", "short"), opts.get("accidental", "sharp"))
             if a["tonic"] is not None else "",
             "energy": a["energy"] if a["energy"] is not None else "",
             "mood": a["mood"] or "",
-            "duration": duration_label(end - start),
+            "duration": duration_label(round_s(end) - round_s(start)),
             "bpm_conf": a["bpm_conf"], "key_conf": a["key_conf"], "error": ""}
 
 
-def analyze_file(path, opts):
-    """Filas del archivo: una, o varias (una por sección) si `split` no es off."""
+def analyze_file(path, opts, index=0):
+    """Filas del archivo: una, o varias (una por sección) si `split` no es off. `index` fija su song_id."""
     info = probe(path)
     duration = info["duration"]
     mode = opts.get("split", "off")
     if mode == "off":
-        return [analysis_row(path, analyze_audio(path, duration, opts), duration, opts)]
+        return [analysis_row(path, analyze_audio(path, duration, opts), duration, opts, index=index)]
     y = decode_mono(path)
     total = duration or len(y) / ANALYSIS_SR
     cuts = section_cuts(y, mode, float(opts.get("min_section") or 10.0), float(opts.get("split_seconds") or 15.0)) \
         if len(y) >= ANALYSIS_SR else []
     edges = [0.0] + [c for c in cuts if 0 < c < total] + [total]
     rows = []
-    for a, b in zip(edges, edges[1:]):
+    for n, (a, b) in enumerate(zip(edges, edges[1:]), 1):
         seg = y[int(round(a * ANALYSIS_SR)):int(round(b * ANALYSIS_SR))]
-        rows.append(analysis_row(path, analyze_samples(seg, opts), total, opts, a, b))
+        rows.append(analysis_row(path, analyze_samples(seg, opts), total, opts, a, b, index, n))
     return rows
 
 
@@ -799,7 +813,7 @@ def analyze_cli(args):
         label = f"[{n}/{len(files)}]"
         show_progress(f"{label} {src.stem}", int((n - 1) / len(files) * 100), {})
         try:
-            file_rows = analyze_file(src, opts)
+            file_rows = analyze_file(src, opts, n - 1)
         except Exception as err:  # noqa: BLE001
             failed += 1
             print(f"{label} {src.name}: ✗ {err}")
@@ -1252,9 +1266,9 @@ def make_handler(job, specs, token, port):
                     if not has_numpy():
                         raise ValueError("falta numpy para el análisis: pip install numpy")
                     try:
-                        self.send_json({"ok": True, "rows": analyze_file(src, analysis_options(body.get("options")))})
+                        self.send_json({"ok": True, "rows": analyze_file(src, analysis_options(body.get("options")), max(0, int(body.get("index") or 0)))})
                     except RuntimeError as err:  # archivo ilegible: se devuelve como fila con error, no rompe el lote
-                        self.send_json({"ok": True, "rows": [{"file": src.name, "error": str(err)}]})
+                        self.send_json({"ok": True, "rows": [{"song_id": song_id(max(0, int(body.get("index") or 0))), "file": src.name, "error": str(err)}]})
                 elif path == "/api/analyze/csv":
                     self.send_bytes(b"\xef\xbb\xbf" + csv_text(body.get("rows") or []).encode("utf-8"), "text/csv; charset=utf-8")
                 elif path == "/api/analyze/save":

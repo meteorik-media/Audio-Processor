@@ -8,8 +8,8 @@ All notable changes to this project are documented here.
 
 - **Breaking:** the "Rename & analyze" tool (`run`) is gone. It's replaced by two separate tools
 - **Convert** (`convert`, `watch`): to MP3 (320k–128k, V0, V2) or WAV (16/24 bit), keeping the original file name (only the extension changes)
-- **Analyze → CSV** (`analyze`): `archivo, bpm, tonalidad, energia, mood, inicio, fin, duracion` — BPM, key, energy 1–10, mood (English labels), start/end and duration as `mm:ss:ms`. Live table in the web interface, **Download CSV** or **Save to output**, and the same CSV from the command line
-- **Split into sections** (`--split auto|fixed`): energy and mood change over a track, so each section gets its own row (same `archivo`, own `inicio`/`fin`/`duracion`). *Auto* cuts where loudness, brightness or hit density change (sections last at least `--min-section`, 10 s by default); *fixed* uses equal chunks of about `--split-seconds` (15 s). Off by default: one row per track, `inicio` = `00:00:000`, `fin` = duration
+- **Analyze → CSV** (`analyze`): `song_id, segment, archivo, bpm, tonalidad, energia, mood, inicio, fin, duracion` — song id (`a`, `b`, … `aa`), section number, BPM, key, energy 1–10, mood (English labels), start/end and duration as `mm:ss`. Live table in the web interface, **Download CSV** or **Save to output**, and the same CSV from the command line
+- **Split into sections** (`--split auto|fixed`): energy and mood change over a track, so each section gets its own row (same `song_id` and `archivo`, own `segment`/`inicio`/`fin`/`duracion`). *Auto* cuts where loudness, brightness or hit density change (sections last at least `--min-section`, 10 s by default); *fixed* uses equal chunks of about `--split-seconds` (15 s). Off by default: one row per track, `inicio` = `00:00`, `fin` = duration
 - File browser: **Select all** (and Ctrl+A) plus Shift+click range selection; the web limit for bulk lists goes from 500 to 5000 files
 - Removed: file renaming, ID3 BPM/key tags, `--dry-run`, the old `analysis.csv` written by the converter
 

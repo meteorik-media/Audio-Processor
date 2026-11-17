@@ -5,9 +5,9 @@
 **Convierte** audio a MP3 o WAV, lo **analiza** a un CSV (BPM, tonalidad, energía, mood, duración) y dibuja **espectrogramas**. Un solo script de Python con interfaz web local, hecho como sus hermanos [Image Processor](https://github.com/meteorik-media/Image-Processor) y [Video Processor](https://github.com/meteorik-media/Video-Processor): mismo aspecto, ajustes con nombre, modo carpeta recursivo, los fallos se saltan y se cuentan, y tus originales nunca se tocan.
 
 ```
-archivo     bpm   tonalidad   energia   mood      inicio      fin         duracion
-loop.wav    140   Dm          7         Dark      00:00:000   00:14:203   00:14:203
-pad.flac    128   C           3         Chill     00:00:000   03:05:120   03:05:120
+song_id  segment  archivo     bpm   tonalidad   energia   mood    inicio  fin    duracion
+a        1        loop.wav    140   Dm          7         Dark    00:00   00:14  00:14
+b        1        pad.flac    128   C           3         Chill   00:00   03:05  03:05
 ```
 
 ## 🧰 Qué hace
@@ -19,11 +19,12 @@ pad.flac    128   C           3         Chill     00:00:000   03:05:120   03:05:
 - Puede vigilar una carpeta (`watch`) y convertir lo que vaya llegando.
 
 ### Analizar → CSV
-- Columnas: `archivo, bpm, tonalidad, energia, mood, inicio, fin, duracion`.
+- Columnas: `song_id, segment, archivo, bpm, tonalidad, energia, mood, inicio, fin, duracion`.
 - **BPM** y **tonalidad** (`Dm`, `Dmin` o Camelot `7A`; sostenidos o bemoles; BPM con 0 o 1 decimal).
 - **Energía 1–10** a partir del volumen, la densidad de golpes, el brillo y el tempo.
 - **Mood** en inglés: Melancholic, Dark, Aggressive, Chill, Happy, Uplifting, Euphoric, Energetic o Neutral, según el modo mayor/menor y la energía.
-- **Inicio / fin / duración** como `mm:ss:ms` (`03:05:123`). Una pista completa va de `00:00:000` a su duración.
+- **Inicio / fin / duración** como `mm:ss` (`03:05`). Una pista completa va de `00:00` a su duración.
+- **`song_id`** identifica cada archivo (`a`, `b`, … `z`, `aa`, `ab`, …, en el orden del análisis) y **`segment`** numera sus secciones (1, 2, 3…; siempre 1 si no se fragmenta), para poder agrupar las secciones de una misma canción.
 - **Fragmentar en secciones** (apagado por defecto): la energía y el mood cambian a lo largo de una pista, así que con `--split auto` cada sección tiene su propia fila (mismo nombre de archivo, con su inicio/fin/duración). Auto corta donde cambian el volumen, el brillo o la densidad de golpes, con secciones de al menos `--min-section` segundos (10). `--split fixed` usa trozos iguales de unos `--split-seconds` (15). Al fragmentar se analiza la pista completa (se ignora la ventana).
 - Los resultados llenan una tabla en pantalla conforme termina cada archivo; después **Descargar CSV** o **Guardar en la salida** (`analysis.csv`). El CSV abre en Excel. La confianza baja de BPM/tonalidad se resalta.
 - Pensado para lotes: en el explorador de archivos usa **Seleccionar todo** (o Ctrl+A), Shift+clic para un rango, o añade una carpeta entera (con subcarpetas).

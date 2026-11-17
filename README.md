@@ -5,9 +5,9 @@
 **Converts** audio to MP3 or WAV, **analyzes** it into a CSV (BPM, key, energy, mood, duration) and draws **spectrograms**. A single Python script with a local web interface, built like its siblings [Image Processor](https://github.com/meteorik-media/Image-Processor) and [Video Processor](https://github.com/meteorik-media/Video-Processor): same look, named settings, recursive folder mode, failures are skipped and counted, and your originals are never touched.
 
 ```
-archivo     bpm   tonalidad   energia   mood      inicio      fin         duracion
-loop.wav    140   Dm          7         Dark      00:00:000   00:14:203   00:14:203
-pad.flac    128   C           3         Chill     00:00:000   03:05:120   03:05:120
+song_id  segment  archivo     bpm   tonalidad   energia   mood    inicio  fin    duracion
+a        1        loop.wav    140   Dm          7         Dark    00:00   00:14  00:14
+b        1        pad.flac    128   C           3         Chill   00:00   03:05  03:05
 ```
 
 ## 🧰 What it does
@@ -19,11 +19,12 @@ pad.flac    128   C           3         Chill     00:00:000   03:05:120   03:05:
 - Can watch a folder (`watch`) and convert whatever shows up.
 
 ### Analyze → CSV
-- Columns: `archivo, bpm, tonalidad, energia, mood, inicio, fin, duracion`.
+- Columns: `song_id, segment, archivo, bpm, tonalidad, energia, mood, inicio, fin, duracion`.
 - **BPM** and **key** (`Dm`, `Dmin` or Camelot `7A`; sharps or flats; BPM with 0 or 1 decimals).
 - **Energy 1–10** from loudness, hit density, brightness and tempo.
 - **Mood** in English: Melancholic, Dark, Aggressive, Chill, Happy, Uplifting, Euphoric, Energetic or Neutral, from the major/minor mode and the energy.
-- **Start / end / duration** as `mm:ss:ms` (`03:05:123`). A whole track is `00:00:000` to its duration.
+- **Start / end / duration** as `mm:ss` (`03:05`). A whole track is `00:00` to its duration.
+- **`song_id`** identifies each file (`a`, `b`, … `z`, `aa`, `ab`, …, in analysis order) and **`segment`** numbers its sections (1, 2, 3…; always 1 when not split), so the sections of one song can be grouped.
 - **Split into sections** (off by default): energy and mood change over a track, so with `--split auto` each section gets its own row (same file name, own start/end/duration). Auto cuts where loudness, brightness or hit density change, with sections of at least `--min-section` seconds (10). `--split fixed` uses equal chunks of about `--split-seconds` (15). The whole track is analyzed when splitting (the window is ignored).
 - The results fill a table on screen as each file finishes; then **Download CSV** or **Save to output** (`analysis.csv`). The CSV opens in Excel. Low BPM/key confidence is highlighted.
 - Bulk-friendly: in the file browser use **Select all** (or Ctrl+A), Shift+click for a range, or add a whole folder (subfolders included).
